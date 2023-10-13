@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import xarray as xr
-from timepath.helpers.misc import get_grouped_unique_val
+from timepath.helpers.misc import get_grouped_unique_val, replace_na
 
 def cint():
     """Works along the lines of sublethal effects data import from dataset 2.
@@ -22,9 +22,9 @@ def cint():
         "Cext0.molL"
     ])
     data["experiment_date"] = pd.to_datetime(data["experiment_date"], format="%m-%d-%y")
-    data["mix"] = np.where(data.mix == "y", True, False)
-
     data["time"] = data.hpf + data.hpe
+
+    data["mix"] = np.where(data.mix == "y", True, False)
     data["sample_id"] = (
         data["experiment_date"].astype(str) + "_" +
         np.where(data["mix"], "mix", data["substance"]) + "_" + 
@@ -77,6 +77,84 @@ def cint():
 
     ds.to_netcdf("data/processed_data/ds3_cint.nc")
 
+
+def cint_to_database():
+
+    # add data
+    data = pd.read_csv("data/dataset_3/cint.csv")
+    data = data.dropna(how="all").copy()    
+    data = data.rename(columns={
+        "Exp.ID": "experiment_id",
+        "Exp.date": "experiment_date",
+        "Cext.molL": "cext",
+        "Cint.molL": "cint",
+        "Cext.nom.molL": "cext_nom",
+        "Cint.nM.ZFE": "cint_zfe",
+        "Mix": "mix",
+        "n_ZFE": "n_zfe"
+    }).drop(columns=[
+        "Cext0.molL"
+    ])
+    data["experiment_date"] = pd.to_datetime(data["experiment_date"], format="%m-%d-%y")
+    data["time"] = data.hpf + data.hpe
+    data["mix"] = np.where(data.mix == "y", True, False)
+
+    measurement_variables = {
+        "cext": "mol L-1",
+        "cint": "mol L-1",
+    }
+
+    # transpose dataframe to long format
+    data = data.melt(
+        id_vars=[v for v in data.columns if v not in measurement_variables],
+        value_vars=measurement_variables.keys(),
+        value_name="value",
+        var_name="measurement"
+    )
+
+    data["unit"] = data.measurement.map(measurement_variables)
+
+    # Fill missing values. This is necessary to avoid grouping chaos
+    data = replace_na(data, "experiment_date", default_value=pd.to_datetime("1900-01-01"))
+    data = replace_na(data, "experimentator", default_value="UNKNOWN")
+
+    experiment_variables = ["experiment_date", "experimentator"]
+    treatment_vars = ["substance", "mix", "cext_nom", "cext_nom_total", "hpf", "n_zfe"]
+
+    def treatment_setter(variables, identifiers):
+        (substance, mix, cext_nom, cext_nom_tot, hpf, n_zfe) = identifiers
+                        
+        if not mix:
+            exposure_map = {f"cext_nom_{substance.lower()}": cext_nom}
+        else:
+            # this is in information about the mixture that I got from 
+            # 2018 and 2019 experiments
+            exposure_map = {
+                "cext_nom_diuron": cext_nom_tot * 0.11,
+                "cext_nom_diclofenac": cext_nom_tot * 1000 * 0.026,
+                "cext_nom_naproxen": cext_nom_tot * 1000 * 0.864,
+            }
+
+        return dict(
+            hpf=hpf,
+            nzfe=n_zfe,
+            **exposure_map,
+        )
+
+    def experiment_setter(variables, identifiers):
+        experiment_date, experimentator = identifiers
+        return {"date": experiment_date, "experimentator": experimentator}
+
+    database = "data/tox.db"
+    create_database(database)
+    add_data(
+        database=database, 
+        data=data, 
+        experiment_variables=experiment_variables,
+        treatment_variables=treatment_vars,
+        experiment_setter=experiment_setter,
+        treatment_setter=treatment_setter,
+    )
 
 if __name__ == "__main__":
     cint()
