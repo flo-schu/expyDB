@@ -1,10 +1,11 @@
+import warnings
 import os
 import pandas as pd
 import numpy as np
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
 from database_model import Observation, Treatment, Experiment, Base
-from timepath.helpers.misc import label_duplicates
+from timepath.helpers.misc import label_duplicates, replace_na
 
 # add data
 data = pd.read_csv("data/dataset_3/cint.csv")
@@ -25,18 +26,41 @@ data["experiment_date"] = pd.to_datetime(data["experiment_date"], format="%m-%d-
 data["time"] = data.hpf + data.hpe
 data["mix"] = np.where(data.mix == "y", True, False)
 
-measurement_variables = [
-    ("cext", "mol L-1"),
-    ("cint", "mol L-1")
-]
+measurement_variables = {
+    "cext": "mol L-1",
+    "cint": "mol L-1",
+}
 
+# transpose dataframe to long format
+data = data.melt(
+    id_vars=[v for v in data.columns if v not in measurement_variables],
+    value_vars=measurement_variables.keys(),
+    value_name="value",
+    var_name="measurement"
+)
+
+data["unit"] = data.measurement.map(measurement_variables)
+
+# Fill missing values. This is necessary to avoid grouping chaos
+data = replace_na(data, "experiment_date", default_value=pd.to_datetime("1900-01-01"))
+data = replace_na(data, "experimentator", default_value="UNKNOWN")
+
+treatment_vars = ["substance", "mix", "cext_nom", "cext_nom_total", "hpf", "n_zfe"]
+
+nans = data[treatment_vars].isna().values.sum(axis=0)
+
+if np.any(nans > 0):
+    warnings.warn(
+        f"NaNs in treatment variables {np.array(treatment_vars)[nans > 0]} detected. " 
+        "Fix in data input, define default, or live with nans in treatment info."
+    )
 
 # Create an engine to connect to your database
 # SQLAlchemy does not suppor the addition of columns. This has to be done
 # by hand, but this is also not such a big deal. 
 database = "data/tox.db"
 
-engine = create_engine(f"sqlite:///{database}", echo=True)
+engine = create_engine(f"sqlite:///{database}", echo=False)
 session = Session(engine)
 if os.path.exists(database):
     Base.metadata.drop_all(engine)
@@ -44,22 +68,24 @@ Base.metadata.create_all(engine)
 
 
 
-
-
 with Session(engine) as session:
     # group by experiment
-    exp_groups = data.groupby(["experiment_date", "experimentator"])
+    exp_groups = data.groupby(["experiment_date", "experimentator"], dropna=False)
     for (exp_date, experimentator), experiment_rows in exp_groups:
         experiment = Experiment(
             date=exp_date,
             experimentator=experimentator
         )
-        treat_groups = experiment_rows.groupby(
-            ["substance", "mix", "cext_nom", "cext_nom_total", "hpf"]
-        )
+        treat_groups = experiment_rows.groupby(treatment_vars,dropna=False)
 
         # group experiments by treatments
-        for (substance, mix, cext_nom, cext_nom_tot, hpf), treatment_rows in treat_groups:
+        for treatment_vals, treatment_rows in treat_groups:
+            # TODO: Future this could be modified so that a treatment specific
+            # function is provided to modify the information, returning a dict
+            # with the kwargs of Treatment(**kwargs)
+            
+            (substance, mix, cext_nom, cext_nom_tot, hpf, n_zfe) = treatment_vals
+            
             if not mix:
                 exposure_map = {f"cext_nom_{substance.lower()}": cext_nom}
             else:
@@ -70,30 +96,30 @@ with Session(engine) as session:
                     "cext_nom_diclofenac": cext_nom_tot * 1000 * 0.026,
                     "cext_nom_naproxen": cext_nom_tot * 1000 * 0.864,
                 }
+            # print(n_zfe)
             treatment = Treatment(
                 experiment=experiment,
                 hpf=hpf,
-                nzfe=treatment_rows["n_zfe"].dropna().unique()[0],
+                nzfe=n_zfe,
                 **exposure_map,
             )
 
             # iterate over measurement variables (when data are organized not in
             # long format)
-            for measurement, unit in measurement_variables:
-                label_duplicates(treatment_rows, index=["time"])
-                # iterate over observations in treatment
-                for key, row in treatment_rows.iterrows():
-                    observation = Observation(
-                        experiment=experiment,
-                        treatment=treatment,
-                        measurement=f"{measurement}_{substance.lower()}",
-                        unit=unit,
-                        replicate_id=row.rep_no,
-                        time=row.time,
-                        value=row[measurement]  
-                    )
+            label_duplicates(treatment_rows, index=["time"])
+            # iterate over observations in treatment
+            for key, row in treatment_rows.iterrows():
+                observation = Observation(
+                    experiment=experiment,
+                    treatment=treatment,
+                    measurement=row.measurement,
+                    unit=row.unit,
+                    replicate_id=row.rep_no,
+                    time=row.time,
+                    value=row.value  
+                )
 
-                    session.add(observation)
+                session.add(observation)
 
     session.flush()
     session.commit()
