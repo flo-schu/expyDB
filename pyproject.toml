@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "experiment-db"
+version = "0.1.0"
+authors = [
+  { name="Florian Schunck", email="fluncki@protonmail.com" },
+]
+description = "Set up and maintain databases for handling experimental data in Python"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies=[
+  "sqlalchemy >= 2.00.22",
+  "numpy ~= 1.25.0",
+  "pandas ~= 2.0.2",
+]
+license = {file = "LICENSE"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Natural Language :: English",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/flo-schu/experiment-db"
+"Issue Tracker" = "https://github.com/flo-schu/experiment-db/issues"
+
+[tool.setuptools.packages.find]
+# All the following settings are optional:
+where = ["."]  # ["."] by default
+include = ["timepath", "tests", "docs"]  # ["."] by default
+exclude = []  # empty by default
+namespaces = true  # true by default
+
+
