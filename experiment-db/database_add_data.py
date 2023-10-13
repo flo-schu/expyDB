@@ -7,7 +7,14 @@ import datetime
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from database_model import Observation, Treatment, Experiment, Base
-from timepath.helpers.misc import label_duplicates
+
+def label_duplicates(data, index: List[str], duplicate_column="replicate_id"):
+    data[duplicate_column] = 0
+    for _, group in data.groupby(index):
+        if len(group) == 1:
+            continue
+        for rep, (rkey, _) in enumerate(group.iterrows()):
+            data.loc[rkey, duplicate_column] = rep
 
 
 def setter(variables, identifiers):
