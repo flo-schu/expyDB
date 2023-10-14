@@ -1,5 +1,6 @@
-import warnings
 import os
+import warnings
+import inspect
 from typing import List
 import pandas as pd
 import numpy as np
@@ -23,10 +24,9 @@ def setter(variables, identifiers):
 def add_data(
     database: str,
     data: pd.DataFrame,
-    experiment_variables: List[str],
-    treatment_variables: List[str],
-    experiment_setter: callable = setter,
-    treatment_setter: callable = setter,
+    treatment: callable,
+    experiment: callable,
+    observation: callable,
 ):
     """Add data to a database.
     
@@ -35,9 +35,39 @@ def add_data(
     
     It is advisable that treatment columns do not contain NaN values 
     
-    The necessary columns inside the database are:
-    TODO: add necessary columns (see experiment database schema in Logseq)
+    In order to populate a database, functions that return the objects (instances)
+    of the database model need to be provided.
+
+    The function arguments of these functions **must** be names that are present 
+    in the provided DataFrame. They are read from the function and provide the
+    grouping in the nested loop, which populates the database with a structured
+    relationship model.
+
+    For different databases the loop below would have to be adapted to accomodate
+    the respective structure of the database, but the basic principle remains the
+    same.
+
+    This approach offers the user the flexibility to transform the input data
+    on a row basis, at the data import stage without having to deal with the 
+    intricacies of the underlying database model.
+
+    Arguments
+    ---------
+
+    database: [str] A string to specify the sqlite database.
+    data: [pd.DataFrame] A pandas DataFrame. Needs to be in long format
+    experiment: [callable] function, which returns an Experiment object.
+    experiment: [callable] function, which returns a Treatment object. 
+    observation: [callable] function, which retruns an Observation object.
+
+    The function arguments of the callables **must** be names that are present 
+    in the provided DataFrame.
     """
+
+    experiment_variables: List[str] = inspect.getfullargspec(experiment)[0]
+    treatment_variables: List[str] = inspect.getfullargspec(treatment)[0]
+    observation_variables: List[str] = inspect.getfullargspec(observation)[0]
+
 
     nans = data[treatment_variables].isna().values.sum(axis=0)
     if np.any(nans > 0):
@@ -55,18 +85,18 @@ def add_data(
         # group by experiment
         exp_groups = data.groupby(experiment_variables, dropna=False)
         for experiment_identifiers, experiment_rows in exp_groups:
-            experiment = Experiment(
-                **experiment_setter(experiment_variables, experiment_identifiers)
-            )
-            experiment.created_at=CREATED_AT
+            
+            # create Experiment object from the user provided function
+            experiment_obj: Experiment = experiment(*experiment_identifiers)
+            experiment_obj.created_at=CREATED_AT
 
             # group experiments by treatments
             treat_groups = experiment_rows.groupby(treatment_variables, dropna=False)
             for treatment_identifiers, treatment_rows in treat_groups:
-                treatment = Treatment(
-                    **treatment_setter(treatment_variables, treatment_identifiers)
-                )
-                experiment.treatments.append(treatment)
+
+                # create Treatment object from the user provided function
+                treatment_obj: Treatment = treatment(*treatment_identifiers)
+                experiment_obj.treatments.append(treatment_obj)
 
                 # assign duplicate keys for repeated measurements
                 if "replicate_id" not in treatment_rows.columns:
@@ -74,17 +104,14 @@ def add_data(
                 
                 # iterate over observations in treatment
                 for _, row in treatment_rows.iterrows():
-                    observation = Observation(
-                        measurement=row.measurement,
-                        unit=row.unit,
-                        replicate_id=row.replicate_id,
-                        time=row.time,
-                        value=row.value  
-                    )
-                    treatment.observations.append(observation)
-                    experiment.observations.append(observation)
+                    observation_args = row[observation_variables].to_list()
+                    
+                    # create Observation object from the user provided function
+                    observation_obj: Observation = observation(*observation_args)
+                    treatment_obj.observations.append(observation_obj)
+                    experiment_obj.observations.append(observation_obj)
             
-            session.add(experiment)
+            session.add(experiment_obj)
 
         session.flush()
         session.commit()
