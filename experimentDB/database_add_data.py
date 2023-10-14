@@ -28,6 +28,16 @@ def add_data(
     experiment_setter: callable = setter,
     treatment_setter: callable = setter,
 ):
+    """Add data to a database.
+    
+    The data must be a pandas.DataFrame instance and be of 'long form',
+    meaning that every measurement must have a separate row.
+    
+    It is advisable that treatment columns do not contain NaN values 
+    
+    The necessary columns inside the database are:
+    TODO: add necessary columns (see experiment database schema in Logseq)
+    """
 
     nans = data[treatment_variables].isna().values.sum(axis=0)
     if np.any(nans > 0):
@@ -46,18 +56,17 @@ def add_data(
         exp_groups = data.groupby(experiment_variables, dropna=False)
         for experiment_identifiers, experiment_rows in exp_groups:
             experiment = Experiment(
-                created_at=CREATED_AT,
                 **experiment_setter(experiment_variables, experiment_identifiers)
             )
+            experiment.created_at=CREATED_AT
 
             # group experiments by treatments
             treat_groups = experiment_rows.groupby(treatment_variables, dropna=False)
             for treatment_identifiers, treatment_rows in treat_groups:
                 treatment = Treatment(
-                    created_at=CREATED_AT,
-                    experiment=experiment,
                     **treatment_setter(treatment_variables, treatment_identifiers)
                 )
+                experiment.treatments.append(treatment)
 
                 # assign duplicate keys for repeated measurements
                 if "replicate_id" not in treatment_rows.columns:
@@ -66,17 +75,16 @@ def add_data(
                 # iterate over observations in treatment
                 for _, row in treatment_rows.iterrows():
                     observation = Observation(
-                        created_at=CREATED_AT,
-                        experiment=experiment,
-                        treatment=treatment,
                         measurement=row.measurement,
                         unit=row.unit,
                         replicate_id=row.replicate_id,
                         time=row.time,
                         value=row.value  
                     )
-
-                    session.add(observation)
+                    treatment.observations.append(observation)
+                    experiment.observations.append(observation)
+            
+            session.add(experiment)
 
         session.flush()
         session.commit()
