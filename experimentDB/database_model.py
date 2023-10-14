@@ -1,12 +1,18 @@
 from typing import List, Optional
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, Date, DateTime
-from sqlalchemy.orm import Mapped, DeclarativeBase, relationship, mapped_column, MappedAsDataclass
-from sqlalchemy.types import DateTime
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import (
+    relationship, 
+    mapped_column, 
+    Mapped, 
+    MappedAsDataclass,
+    DeclarativeBase,
+)
 
 # declarative base class
 class Base(MappedAsDataclass, DeclarativeBase):
     pass
+
 
 class Experiment(Base):
     __tablename__ = "experiment_table"
