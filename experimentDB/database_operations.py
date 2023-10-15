@@ -105,9 +105,11 @@ def add_data(
                 # iterate over observations in treatment
                 for _, row in treatment_rows.iterrows():
                     observation_args = row[observation_variables].to_list()
-                    
+
                     # create Observation object from the user provided function
                     observation_obj: Observation = observation(*observation_args)
+                    if "replicate_id" not in observation_variables:
+                        observation_obj.replicate_id = int(row["replicate_id"])
                     treatment_obj.observations.append(observation_obj)
                     experiment_obj.observations.append(observation_obj)
             
