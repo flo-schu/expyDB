@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "experiment-db"
+name = "expyDB"
 version = "0.1.0"
 authors = [
   { name="Florian Schunck", email="fluncki@protonmail.com" },
