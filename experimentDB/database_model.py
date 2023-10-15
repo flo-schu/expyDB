@@ -17,7 +17,7 @@ class Base(MappedAsDataclass, DeclarativeBase):
 class Experiment(Base):
     __tablename__ = "experiment_table"
     
-    id_biotox: Mapped[Optional[int]] = mapped_column(default=None)
+    id_laboratory: Mapped[Optional[int]] = mapped_column(default=None)
     name: Mapped[Optional[str]] = mapped_column(default=None)
     date: Mapped[Optional[datetime]] = mapped_column(default=datetime(1900,1,1,0,0))
     experimentator: Mapped[str] = mapped_column(default=None)
