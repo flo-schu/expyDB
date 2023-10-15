@@ -7,7 +7,7 @@ import numpy as np
 import datetime
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
-from experimentDB.database_model import Observation, Treatment, Experiment, Base
+from expyDB.database_model import Observation, Treatment, Experiment, Base
 
 def label_duplicates(data, index: List[str], duplicate_column="replicate_id"):
     data[duplicate_column] = 0

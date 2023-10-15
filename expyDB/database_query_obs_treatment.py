@@ -2,7 +2,7 @@ import pandas as pd
 import xarray as xr
 from sqlalchemy import select, create_engine, inspect, or_, and_
 from sqlalchemy.orm import selectinload, Session, joinedload
-from experimentDB.database_model import Treatment, Observation, Experiment
+from expyDB.database_model import Treatment, Observation, Experiment
 
 from timepath.helpers.misc import get_grouped_unique_val
 
