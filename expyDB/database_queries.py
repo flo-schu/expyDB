@@ -22,39 +22,51 @@ stmt = (
     .order_by(Observation.id)
 )
 
-database = "data/tox.db"
-engine = create_engine(f"sqlite:///{database}", echo=True)
-data = pd.read_sql(stmt, con=f"sqlite:///{database}")
-data = data.drop(columns=["id_1", "experiment_id_1"])
-data["id"] = data["treatment_id"].astype(str) + "_" + data["replicate_id"].astype(str)
 
-data = data.set_index(["time", "id"])
-hpf_id = get_grouped_unique_val(data, "hpf", "id")
-cext_diu_id = get_grouped_unique_val(data, "cext_nom_diuron", "id")
-cext_dic_id = get_grouped_unique_val(data, "cext_nom_diclofenac", "id")
-cext_nap_id = get_grouped_unique_val(data, "cext_nom_naproxen", "id")
-nzfe_id = get_grouped_unique_val(data, "nzfe", "id")
-treat_id = get_grouped_unique_val(data, "treatment_id", "id")
+def query(database, statement):
+    """ask a query to the database.
 
-meta = (data["measurement"] + "___" + data["unit"]).unique()
-meta = {measure:unit for measure, unit in [m.split("___") for m in meta]}
+    Parameters
+    ----------
 
-data = data.drop(columns=[
-    "name", "experiment_id", "replicate_id", "unit", "nzfe", 
-    "hpf", "treatment_id"
-])
+    database[str]: path to a database
+    statement[Select]: SQLAlchemy select statement
+    """
+    # ask query to database
+    data = pd.read_sql(statement, con=f"sqlite:///{database}")
+    
+    data = data.drop(columns=["id_1", "experiment_id_1"])
+    data["id"] = data["treatment_id"].astype(str) + "_" + data["replicate_id"].astype(str)
 
-data = data.pivot(columns="measurement", values="value")
+    data = data.set_index(["time", "id"])
+    hpf_id = get_grouped_unique_val(data, "hpf", "id")
+    cext_diu_id = get_grouped_unique_val(data, "cext_nom_diuron", "id")
+    cext_dic_id = get_grouped_unique_val(data, "cext_nom_diclofenac", "id")
+    cext_nap_id = get_grouped_unique_val(data, "cext_nom_naproxen", "id")
+    nzfe_id = get_grouped_unique_val(data, "nzfe", "id")
+    treat_id = get_grouped_unique_val(data, "treatment_id", "id")
 
-ds = xr.Dataset.from_dataframe(data)
-ds = ds.assign_coords({
-    "cext_nom_naproxen": ("id", cext_nap_id),
-    "cext_nom_diclofenac": ("id", cext_dic_id),
-    "cext_nom_diuron": ("id", cext_diu_id),
-    "hpf": ("id", hpf_id),
-    "nzfe": ("id", nzfe_id),
-    "treatment_id": ("id", treat_id),
+    meta = (data["measurement"] + "___" + data["unit"]).unique()
+    meta = {measure:unit for measure, unit in [m.split("___") for m in meta]}
 
-})
+    data = data.drop(columns=[
+        "name", "experiment_id", "replicate_id", "unit", "nzfe", 
+        "hpf", "treatment_id"
+    ])
 
-ds.attrs.update(meta)
+    data = data.pivot(columns="measurement", values="value")
+
+    ds = xr.Dataset.from_dataframe(data)
+    ds = ds.assign_coords({
+        "cext_nom_naproxen": ("id", cext_nap_id),
+        "cext_nom_diclofenac": ("id", cext_dic_id),
+        "cext_nom_diuron": ("id", cext_diu_id),
+        "hpf": ("id", hpf_id),
+        "nzfe": ("id", nzfe_id),
+        "treatment_id": ("id", treat_id),
+
+    })
+
+    ds.attrs.update(meta)
+
+    return ds
