@@ -45,6 +45,7 @@ def query(database, statement):
     cext_nap_id = get_grouped_unique_val(data, "cext_nom_naproxen", "id")
     nzfe_id = get_grouped_unique_val(data, "nzfe", "id")
     treat_id = get_grouped_unique_val(data, "treatment_id", "id")
+    experi_id = get_grouped_unique_val(data, "experiment_id", "id")
 
     meta = (data["measurement"] + "___" + data["unit"]).unique()
     meta = {measure:unit for measure, unit in [m.split("___") for m in meta]}
@@ -64,6 +65,7 @@ def query(database, statement):
         "hpf": ("id", hpf_id),
         "nzfe": ("id", nzfe_id),
         "treatment_id": ("id", treat_id),
+        "experiment_id": ("id", experi_id),
 
     })
 
