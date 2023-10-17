@@ -56,9 +56,10 @@ class Observation(Base):
     measurement: Mapped[str]
     unit: Mapped[str]
     time: Mapped[float]
+    method: Mapped[Optional[str]] = mapped_column(default=None)
     value: Mapped[Optional[float]] = mapped_column(default=None)
     replicate_id: Mapped[Optional[int]] = mapped_column(default=0)
-    
+
     # meta
     id: Mapped[int] = mapped_column(init=False, primary_key=True)
     
