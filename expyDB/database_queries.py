@@ -4,7 +4,7 @@ from sqlalchemy import select, create_engine, inspect, or_, and_
 from sqlalchemy.orm import selectinload, Session, joinedload
 from expyDB.database_model import Treatment, Observation, Experiment
 
-from timepath.helpers.misc import get_grouped_unique_val
+from pymob.utils.misc import get_grouped_unique_val
 
 stmt = select(Observation)
 stmt = select(Treatment).options(selectinload(Treatment.observations)).order_by(Treatment.id)
