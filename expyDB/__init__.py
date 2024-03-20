@@ -13,4 +13,3 @@ from .database_model import (
     Observation
 )
 
-from .database_queries import query

@@ -1,4 +1,4 @@
-from typing import List, Optional, Timedelta
+from typing import List, Optional
 from datetime import datetime, timedelta
 from sqlalchemy import ForeignKey
 from sqlalchemy.orm import (
@@ -45,7 +45,7 @@ class Treatment(Base):
     name: Mapped[Optional[str]] = mapped_column(default=None, doc="Name of the treatment")
     
     # information about the test subject
-    subject: Mapped[str]
+    subject: Mapped[Optional[str]] = mapped_column(default=None, doc="Identification of the subject of the treatment (Species, Family, Name, ...)")
     subject_age: Mapped[Optional[timedelta]] = mapped_column(default=None, doc="Age of the test subject, at the start of the treatment")
     subject_count: Mapped[Optional[int]] = mapped_column(default=1, doc="Count of the test subjects, if they cannot be discriminated in the experiment")
 
@@ -73,6 +73,7 @@ class Timeseries(Base):
     variable: Mapped[str]
     dimension: Mapped[str]
     unit: Mapped[str]
+    name: Mapped[Optional[str]] = mapped_column(default=None, doc="e.g. replicate ID")
     sample: Mapped[Optional[str]] = mapped_column(default=None, doc="If type 'observation', the sample which has been measured.")
     location: Mapped[Optional[str]] = mapped_column(default=None, doc="Where the observation has been made")
     method: Mapped[Optional[str]] = mapped_column(default=None, doc="The measurement method")
@@ -99,9 +100,9 @@ class TsData(Base):
     __tablename__ = "tsdata_table"
 
     id: Mapped[int] = mapped_column(init=False, primary_key=True)
-    time: Mapped[timedelta] = mapped_column(default=0)
+    time: Mapped[timedelta]
     value: Mapped[float]
 
     # relationships to parent tables
-    timeseries_id = Mapped[int] = mapped_column(ForeignKey("timeseries_table.id"), init=False)
+    timeseries_id: Mapped[int] = mapped_column(ForeignKey("timeseries_table.id"), init=False)
     timeseries: Mapped["Timeseries"] = relationship(back_populates="tsdata", repr=False, init=False)
