@@ -55,11 +55,9 @@ class Treatment(Base):
     volume: Mapped[Optional[float]] = mapped_column(default=None, doc="The volume of the medium if applicable.")
     info: Mapped[Optional[str]] = mapped_column(default=None, doc="Extra information about the treatment")
 
-    # timeseries. This is currently grouped by exposures and observations, however
-    # these could technically be grouped into on relational mapping (timeseries)
-    # TODO: Find out which is the better way to handle such data.
+    # timeseries. This is currently grouped by interventions and observations, however
     interventions: Mapped[List["Timeseries"]] = relationship(init=False, repr=False, back_populates="treatment", cascade="all, delete-orphan")
-    observations: Mapped[List["Timeseries"]] = relationship(init=False, repr=False, back_populates="treatment", cascade="all, delete-orphan")
+    observations: Mapped[List["Timeseries"]] = relationship(init=False, repr=False, back_populates="treatment", cascade="all, delete-orphan", overlaps="interventions")
     
     # relationships to parent tables
     experiment_id: Mapped[int] = mapped_column(ForeignKey("experiment_table.id"), init=False)
@@ -81,14 +79,13 @@ class Timeseries(Base):
     
     name: Mapped[Optional[str]] = mapped_column(default=None, doc="e.g. replicate ID")
     sample: Mapped[Optional[str]] = mapped_column(default=None, doc="If type 'observation', the sample which has been measured.")
-    interpolation: Mapped[str] = mapped_column(default="constant", doc="How the data are interpolated between timepoints.")
-    info: Mapped[str] = mapped_column(default=None)
+    interpolation: Mapped[Optional[str]] = mapped_column(default="constant", doc="How the data are interpolated between timepoints.")
+    info: Mapped[Optional[str]] = mapped_column(default=None)
 
     tsdata: Mapped[List["TsData"]] = relationship(back_populates="timeseries", repr=False, init=False)
 
     # relationships to parent tables
     treatment_id: Mapped[Optional[int]] = mapped_column(ForeignKey("treatment_table.id"), init=False)
-    # TODO: Not sure how back-population works with two columns that refer to the same table
     treatment: Mapped[Optional["Treatment"]] = relationship(repr=False, init=False)
 
 
