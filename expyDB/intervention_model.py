@@ -20,7 +20,7 @@ class Experiment(Base):
     id_laboratory: Mapped[Optional[int]] = mapped_column(default=None)
     name: Mapped[Optional[str]] = mapped_column(default=None)
     date: Mapped[Optional[datetime]] = mapped_column(default=datetime(1900,1,1,0,0))
-    experimentator: Mapped[str] = mapped_column(default=None)
+    experimentator: Mapped[Optional[str]] = mapped_column(default=None)
     public: Mapped[bool] = mapped_column(default=False)
     
     # meta
@@ -46,7 +46,8 @@ class Treatment(Base):
     
     # information about the test subject
     subject: Mapped[Optional[str]] = mapped_column(default=None, doc="Identification of the subject of the treatment (Species, Family, Name, ...)")
-    subject_age: Mapped[Optional[timedelta]] = mapped_column(default=None, doc="Age of the test subject, at the start of the treatment")
+    subject_age_from: Mapped[Optional[timedelta]] = mapped_column(default=None, doc="Age of the test subject, at the start of the treatment")
+    subject_age_to: Mapped[Optional[timedelta]] = mapped_column(default=None, doc="Age of the test subject, at the start of the treatment")
     subject_count: Mapped[Optional[int]] = mapped_column(default=1, doc="Count of the test subjects, if they cannot be discriminated in the experiment")
 
     # information about the test environment
@@ -73,10 +74,13 @@ class Timeseries(Base):
     variable: Mapped[str]
     dimension: Mapped[str]
     unit: Mapped[str]
+
+    # this column is very important, because it requires some thought.
+    location: Mapped[str] = mapped_column(doc="Where the observation has been made or how the intervention was applied.")
+    method: Mapped[Optional[str]] = mapped_column(default=None, doc="If observation: the measurement method, if intervention: nominal")
+    
     name: Mapped[Optional[str]] = mapped_column(default=None, doc="e.g. replicate ID")
     sample: Mapped[Optional[str]] = mapped_column(default=None, doc="If type 'observation', the sample which has been measured.")
-    location: Mapped[Optional[str]] = mapped_column(default=None, doc="Where the observation has been made")
-    method: Mapped[Optional[str]] = mapped_column(default=None, doc="The measurement method")
     interpolation: Mapped[str] = mapped_column(default="constant", doc="How the data are interpolated between timepoints.")
     info: Mapped[str] = mapped_column(default=None)
 
