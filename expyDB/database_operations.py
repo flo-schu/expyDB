@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import datetime
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, DeclarativeBase
 from expyDB.database_model import Observation, Treatment, Experiment, Base
 
 def label_duplicates(data, index: List[str], duplicate_column="replicate_id"):
@@ -137,18 +137,37 @@ def remove_latest(database):
         session.flush()
         session.commit()
 
-def create_database(database):
+def create_database(database, model: DeclarativeBase, force=False):
+    if os.path.exists(database):
+        if force:
+            os.remove(database)
+        else:
+            overwrite = input(f"Database '{database}' exists. Overwrite? (y/N)")
+            if overwrite.lower() != "y":
+                print(f"Database has not been created at {database}.")
+                return
+            else:
+                os.remove(database)
+
+        
     # SQLAlchemy does not suppor the addition of columns. This has to be done
     # by hand, but this is also not such a big deal. 
     engine = create_engine(f"sqlite:///{database}", echo=False)
-    session = Session(engine)
-    if not os.path.exists(database):
-        Base.metadata.create_all(engine)
+    # session = Session(engine)
+    model.metadata.create_all(engine)
+    print(f"Database has successfully been created at {database}.")
 
-def delete_tables(database):
+
+def delete_tables(database, model: DeclarativeBase):
     engine = create_engine(f"sqlite:///{database}", echo=False)
     session = Session(engine)
     if os.path.exists(database):
-        Base.metadata.drop_all(engine)
+        model.metadata.drop_all(engine)
 
 
+def experiment_to_db(database, experiment):
+    engine = create_engine(f"sqlite:///{database}", echo=False)
+    with Session(engine) as session:
+        session.add(experiment)
+        session.flush()
+        session.commit()
