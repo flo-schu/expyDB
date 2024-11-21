@@ -1,44 +1,33 @@
-from typing import List, Optional, Literal
+from typing import List, Optional, LiteralString
 from datetime import datetime, timedelta
 
 import pandas as pd
 import arviz as az
 import xarray as xr
+import numpy as np
 
-from sqlalchemy import ForeignKey, select, inspect
-from sqlalchemy.orm import (
-    relationship, 
-    mapped_column, 
-    Mapped, 
-    MappedAsDataclass,
-    DeclarativeBase,
-    validates
-)
+from sqlmodel import ForeignKey, select, inspect, Field, SQLModel, Relationship
+from pydantic import field_validator, ValidationInfo, ValidationError
 
-# declarative base class
-class InterventionModelBase(MappedAsDataclass, DeclarativeBase):
-    pass
+DATETIME_DEFAULT = datetime.now()
 
-
-class Experiment(InterventionModelBase):
-    __tablename__ = "experiment_table"
-    
-    id_laboratory: Mapped[Optional[int]] = mapped_column(default=None)
-    name: Mapped[Optional[str]] = mapped_column(default=None)
-    date: Mapped[Optional[datetime]] = mapped_column(default=datetime(1900,1,1,0,0))
-    experimentator: Mapped[Optional[str]] = mapped_column(default=None)
-    public: Mapped[Optional[bool]] = mapped_column(default=False)
-    info: Mapped[Optional[str]] = mapped_column(default=None, repr=False, doc="Extra information about the Experiment")
+class Experiment(SQLModel, table=True):
+    id_laboratory: Optional[int] = Field(default=None)
+    name: Optional[str] = Field(default=None)
+    date: Optional[datetime] = Field(default=datetime(1900,1,1,0,0))
+    experimentator: Optional[str] = Field(default=None)
+    public: Optional[bool] = Field(default=False)
+    info: Optional[str] = Field(default=None, repr=False, description="Extra information about the Experiment")
     
     # meta
-    id: Mapped[int] = mapped_column(init=False, primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(init=False)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: Optional[datetime] = Field(default=DATETIME_DEFAULT, sa_column_kwargs=dict())
     
     # relationships
-    treatments: Mapped[List["Treatment"]] = relationship(init=False, repr=False, back_populates="experiment", cascade="all, delete-orphan")
+    treatments: List["Treatment"] = Relationship(back_populates="experiment", cascade_delete=True)
 
 
-class Treatment(InterventionModelBase):
+class Treatment(SQLModel, table=True):
     """The treatment table contains the main pieces of information. In principle,
     all relevant information for repitition of an experiment should be included
     here.
@@ -46,61 +35,61 @@ class Treatment(InterventionModelBase):
     Any time-variable information that is relevant to the treatment can and should
     be included via the exposures map.
     """
-    __tablename__ = "treatment_table"
-    
-    id: Mapped[int] = mapped_column(init=False, primary_key=True)
-    name: Mapped[Optional[str]] = mapped_column(default=None, doc="Name of the treatment")
+    id: Optional[int] = Field(default=None, primary_key=True, sa_column_kwargs=dict())
+    name: Optional[str] = Field(default=None, description="Name of the treatment")
     
     # information about the test subject
-    subject: Mapped[Optional[str]] = mapped_column(default=None, doc="Identification of the subject of the treatment (Species, Family, Name, ...)")
-    subject_age_from: Mapped[Optional[timedelta]] = mapped_column(default=None, doc="Age of the test subject, at the start of the treatment")
-    subject_age_to: Mapped[Optional[timedelta]] = mapped_column(default=None, doc="Age of the test subject, at the start of the treatment")
-    subject_count: Mapped[Optional[float]] = mapped_column(default=1, doc="Count of the test subjects, if they cannot be discriminated in the experiment")
+    subject: Optional[str] = Field(default=None, description="Identification of the subject of the treatment (Species, Family, Name, ...)")
+    subject_age_from: Optional[timedelta] = Field(default=None, description="Age of the test subject, at the start of the treatment")
+    subject_age_to: Optional[timedelta] = Field(default=None, description="Age of the test subject, at the start of the treatment")
+    subject_count: Optional[float] = Field(default=1, description="Count of the test subjects, if they cannot be discriminated in the experiment")
 
     # information about the test environment
-    medium: Mapped[Optional[str]] = mapped_column(default=None, doc="The medium inside the subject lived throughout the treatment")
-    volume: Mapped[Optional[float]] = mapped_column(default=None, doc="The volume of the medium if applicable.")
-    info: Mapped[Optional[str]] = mapped_column(default=None, repr=False, doc="Extra information about the treatment")
+    medium: Optional[str] = Field(default=None, description="The medium inside the subject lived throughout the treatment")
+    volume: Optional[float] = Field(default=None, description="The volume of the medium if applicable.")
+    info: Optional[str] = Field(default=None, repr=False, description="Extra information about the treatment")
 
     # timeseries. This is currently grouped by interventions and observations, however
-    interventions: Mapped[List["Timeseries"]] = relationship(init=False, repr=False, back_populates="treatment", cascade="all, delete-orphan")
-    observations: Mapped[List["Timeseries"]] = relationship(init=False, repr=False, back_populates="treatment", cascade="all, delete-orphan", overlaps="interventions")
+    interventions: List["Timeseries"] = Relationship(back_populates="treatment", cascade_delete=True, sa_relationship_kwargs=dict())
+    observations: List["Timeseries"] = Relationship(back_populates="treatment", cascade_delete=True, sa_relationship_kwargs=dict(overlaps="interventions"))
     
     # relationships to parent tables
-    experiment_id: Mapped[int] = mapped_column(ForeignKey("experiment_table.id"), init=False)
-    experiment: Mapped["Experiment"] = relationship(init=False, repr=False, back_populates="treatments")
+    experiment_id: Optional[int] = Field(default=None, foreign_key="experiment.id", sa_column_kwargs=dict())
+    experiment: Optional["Experiment"] = Relationship(back_populates="treatments", sa_relationship_kwargs=dict())
 
-    @validates("subject_age_from", "subject_age_to")
-    def validate_age(self, key, value):
+    @field_validator("subject_age_from", "subject_age_to", mode="before")
+    @classmethod
+    def validate_age(cls, value):
         if value is None:
             return value
         else:
             return pd.Timedelta(value)
 
-class Timeseries(InterventionModelBase):
-    __tablename__ = "timeseries_table"
-
-    id: Mapped[int] = mapped_column(init=False, primary_key=True)
-    type: Mapped[Literal["observation", "intervention"]] = mapped_column(doc="Can be 'intervention' or 'observation'.")
-    variable: Mapped[str]
-    unit: Mapped[str]
-    name: Mapped[Optional[str]] = mapped_column(default=None, doc="e.g. replicate ID")
+class Timeseries(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True, sa_column_kwargs=dict())
+    type: str = Field(description="Can be 'intervention' or 'observation'.")
+    variable: str
+    name: Optional[str] = Field(default=None, description="e.g. replicate ID")
 
     # this column is very important, because it requires some thought.
-    method: Mapped[Optional[str]] = mapped_column(default=None, doc="If type: 'observation': the measurement method. If type: 'intervention': the application method")
-    sample: Mapped[Optional[str]] = mapped_column(default=None, doc="If type: 'observation', the sample which has been measured. If type: 'intervention', the medium of applying the intervention")
-    interpolation: Mapped[Optional[str]] = mapped_column(default="constant", doc="How the data are interpolated between timepoints.")
-    info: Mapped[Optional[str]] = mapped_column(default=None)
+    unit: str
+    method: Optional[str] = Field(default=None, description="If type: 'observation': the measurement method. If type: 'intervention': the application method")
+    sample: Optional[str] = Field(default=None, description="If type: 'observation', the sample which has been measured. If type: 'intervention', the medium of applying the intervention")
+    interpolation: Optional[str] = Field(default="constant", description="How the data are interpolated between timepoints.")
+    info: Optional[str] = Field(default=None)
 
-    tsdata: Mapped[List["TsData"]] = relationship(back_populates="timeseries", repr=False, init=False)
+    tsdata: List["TsData"] = Relationship(back_populates="timeseries", sa_relationship_kwargs=dict())
 
     # relationships to parent tables
-    treatment_id: Mapped[Optional[int]] = mapped_column(ForeignKey("treatment_table.id"), init=False)
-    treatment: Mapped[Optional["Treatment"]] = relationship(repr=False, init=False)
+    treatment_id: Optional[int] = Field(default=None, foreign_key="treatment.id")
+    treatment: Optional["Treatment"] = Relationship(sa_relationship_kwargs=dict())
 
 
-    @validates("method", "sample", "unit", "interpolation")
-    def parse_string_to_dict(self, key, value):
+    @field_validator("method", "sample", "unit", "interpolation", mode="before")
+    @classmethod
+    def parse_string_to_dict(cls, value, info: ValidationInfo):
+        if value is None:
+            return None
         # Step 1: Split the input string by commas to get individual components
         pairs = value.split(',')
 
@@ -120,28 +109,45 @@ class Timeseries(InterventionModelBase):
                 result_dict['default'] = pair.strip()
 
         # Print the resulting dictionary
-        return result_dict.get(self.name, result_dict["default"])
+        return result_dict.get(info.data["name"], result_dict["default"])
 
-class TsData(InterventionModelBase):
+class TsData(SQLModel, table=True):
     """TsData contains only the timestamp and the value associated with the 
     timestamp, all other information:
     - name of the variable (e.g. Food, Diuron, ...)
     - dimension (time, mass, ...)
     - unit (h, mol/L)
+
+    The time information is stored in seconds as this is the most commonly used
+    unit in python.
+
     are assumed constant for any timeseries and stored in the Parent timeseries
     entry.
     """
-    __tablename__ = "tsdata_table"
-
-    id: Mapped[int] = mapped_column(init=False, primary_key=True)
-    time: Mapped[timedelta]
-    value: Mapped[float]
+    id: Optional[int] = Field(primary_key=True, default=None)
+    time: timedelta
+    value: float
 
     # relationships to parent tables
-    timeseries_id: Mapped[int] = mapped_column(ForeignKey("timeseries_table.id"), init=False)
-    timeseries: Mapped["Timeseries"] = relationship(back_populates="tsdata", repr=False, init=False)
+    timeseries_id: Optional[int] = Field(default=None, foreign_key="timeseries.id", sa_column_kwargs=dict())
+    timeseries: Optional["Timeseries"] = Relationship(back_populates="tsdata", sa_relationship_kwargs=dict())
 
-
+    @field_validator("time", mode="before")
+    @classmethod
+    def to_timedelta(cls, value, info):
+        if isinstance(value, float|int):
+            return timedelta(seconds=float(value))
+        elif isinstance(value, timedelta):
+            return value
+        elif isinstance(value, np.timedelta64):
+            return value.item()
+        elif isinstance(value, pd.Timedelta):
+            return value.to_pytimedelta()
+        else:
+            raise TypeError(
+                "TsData expects 'time' Field to be of types: "
+                "'float', 'datetime.timedelta', 'pd.Timedelta' or 'np.timedelta64'"
+            )
 def split_join(df, statement):
     """Corrects column names from informations contained in the statement"""
     from_clause = statement.froms[0]
@@ -275,8 +281,8 @@ def from_expydb(database, statement=None):
             ts_data = ts_data.assign_coords(id=ts_data["id"])
             ts_data = ts_data.rename(value=variable)
             ts_data = ts_data.expand_dims("timeseries_id")
-            ts_data = ts_data.assign_coords({key: ("timeseries_id", list(val)) for key, val in timeseries_row.items()})
-            ts_data = ts_data.assign_coords({key: ("timeseries_id", list(val)) for key, val in treatment_row.items()})
+            ts_data = ts_data.assign_coords({key: ("timeseries_id", list([val])) for key, val in timeseries_row.items()})
+            ts_data = ts_data.assign_coords({key: ("timeseries_id", list([val])) for key, val in treatment_row.items()})
 
 
 
@@ -367,7 +373,7 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
 
     # get experiment fields
     experiment_columns = [
-        column.key for column in Experiment.__table__.columns
+        column for column in Experiment.__fields__
         if not (
             column.primary_key or 
             column.key in ["created_at", "info"]

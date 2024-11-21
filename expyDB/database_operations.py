@@ -8,6 +8,7 @@ import datetime
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, DeclarativeBase
 from expyDB.database_model import Observation, Treatment, Experiment, Base
+from sqlmodel import SQLModel
 
 def label_duplicates(data, index: List[str], duplicate_column="replicate_id"):
     data[duplicate_column] = 0
@@ -137,7 +138,7 @@ def remove_latest(database):
         session.flush()
         session.commit()
 
-def create_database(database, model: DeclarativeBase, force=False):
+def create_database(database, force=False):
     if os.path.exists(database):
         if force:
             os.remove(database)
@@ -154,7 +155,7 @@ def create_database(database, model: DeclarativeBase, force=False):
     # by hand, but this is also not such a big deal. 
     engine = create_engine(f"sqlite:///{database}", echo=False)
     # session = Session(engine)
-    model.metadata.create_all(engine)
+    SQLModel.metadata.create_all(engine)
     print(f"Database has successfully been created at {database}.")
 
 
