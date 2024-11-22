@@ -1,4 +1,4 @@
-from typing import List, Optional, LiteralString
+from typing import List, Optional, Annotated, Union, Any, Dict, Tuple, Literal
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -7,7 +7,107 @@ import xarray as xr
 import numpy as np
 
 from sqlmodel import ForeignKey, select, inspect, Field, SQLModel, Relationship
-from pydantic import field_validator, ValidationInfo, ValidationError
+from pydantic import (
+    field_validator, 
+    model_validator,
+    model_serializer,
+    ValidationInfo, 
+    ValidationError, 
+    computed_field,
+    PlainSerializer,
+    BeforeValidator
+)
+
+
+class Converter:
+    def __init__(self, experiment: "Experiment"):
+        self._experiment = experiment
+        self._model_dict = experiment.model_dump(mode="python")
+
+        experiment_meta = self.parse_experiment()
+
+        treatment_meta, observations, intterventions = self.parse_treatments()
+
+
+    def parse_experiment(self):
+        experiment_meta = self._experiment.model_dump(mode="python", exclude="treatments") # type:ignore
+        return experiment_meta
+
+    def parse_treatments(self):
+        keys = [k for k, f in Treatment.__fields__.items() if not f.exclude] # type: ignore
+        treatments_meta = {k: None for k in keys}
+
+        observations = treatments_to_pandas(
+            treatment_list=self._experiment.treatments,
+            timeseries_type="observation"
+        )
+
+        interventions = treatments_to_pandas(
+            treatment_list=self._experiment.treatments,
+            timeseries_type="intervention"
+        )
+        return treatments_meta, observations, interventions
+
+
+def treatments_to_pandas(
+    treatment_list: List["Treatment"], 
+    timeseries_type: Literal["observation", "intervention"]
+):
+    timeseries = {}
+    for ti, treatment in enumerate(treatment_list):
+        _treatment_meta = treatment.model_dump(mode="python", exclude=["observations", "interventions"]) # type:ignore
+        timeseries_list = getattr(treatment, f"{timeseries_type}s")
+        tid = _treatment_meta["name"]
+        tid = str(ti).zfill(2) if tid is None else tid
+
+        for oi, timeseries_obs in enumerate(timeseries_list): # type: ignore
+            _timeseries_meta = timeseries_obs.model_dump(mode="python") 
+            tsdata = [tsd.model_dump() for tsd in timeseries_obs.tsdata]
+            rid = _timeseries_meta["name"]
+            rid = str(oi).zfill(2) if rid is None else rid
+
+            df = pd.DataFrame.from_records(tsdata)
+            if oi == 0:
+                time = df["time"].values
+                timeseries.update({"time": time})
+
+            values = df["value"].values
+            timeseries.update({f"{tid}_{rid}": values})
+
+        return pd.DataFrame.from_dict(timeseries)
+
+
+
+class PandasConverter(Converter):
+    pass
+
+def model_to_pandas(data: Dict) -> Dict[str, pd.DataFrame]:
+    return
+
+def tsdata_to_pandas(tsdata: List["TsData"]) -> pd.DataFrame:
+    return pd.DataFrame.from_records([tsd.model_dump() for tsd in tsdata])
+    
+def pandas_to_tsdata(data: pd.DataFrame, timeseries:Optional["Timeseries"] = None) -> List["TsData"]:
+    
+    tsdata = []
+    for i, row in data.iterrows():
+        # assigns the timeseries to the model
+        ts_datum = TsData.model_validate(dict(
+            time=row["time"], value=row["value"], timeseries=timeseries
+        ))
+        tsdata.append(ts_datum)
+    return tsdata
+
+def excel_to_meta_and_tsdata(data: pd.ExcelFile) -> Tuple[Dict, pd.DataFrame]:
+    meta = pd.read_excel(data, sheet_name="meta", index_col=0)[0].to_dict()
+    values = pd.read_excel(data, sheet_name="data")
+    values["time"] = pd.to_timedelta(values["time"], unit=meta["time_unit"])    
+    return meta, values
+
+def pandas_to_timeseries(meta: pd.Series, data: pd.DataFrame) -> Dict:
+    tsdata = pandas_to_tsdata(data)
+    return dict(**meta.to_dict(), tsdata=tsdata.copy())
+
 
 DATETIME_DEFAULT = datetime.now()
 
@@ -20,12 +120,21 @@ class Experiment(SQLModel, table=True):
     info: Optional[str] = Field(default=None, repr=False, description="Extra information about the Experiment")
     
     # meta
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True, exclude=True)
     created_at: Optional[datetime] = Field(default=DATETIME_DEFAULT, sa_column_kwargs=dict())
     
     # relationships
     treatments: List["Treatment"] = Relationship(back_populates="experiment", cascade_delete=True)
+    
+    # @computed_field(repr=False)
+    # def treatments(self) -> List["Treatment"]:
+    #     return [t for t in self._treatments]
 
+    # @model_serializer(when_used="always")
+    # def serialize_to_excel(self) -> Dict[str,Dict]:
+    #     experiment_meta = self.__fields__.items()
+    #     self._treatments[0].model_dump()
+    #     return 
 
 class Treatment(SQLModel, table=True):
     """The treatment table contains the main pieces of information. In principle,
@@ -35,7 +144,7 @@ class Treatment(SQLModel, table=True):
     Any time-variable information that is relevant to the treatment can and should
     be included via the exposures map.
     """
-    id: Optional[int] = Field(default=None, primary_key=True, sa_column_kwargs=dict())
+    id: Optional[int] = Field(default=None, primary_key=True, exclude=True, sa_column_kwargs=dict())
     name: Optional[str] = Field(default=None, description="Name of the treatment")
     
     # information about the test subject
@@ -50,11 +159,19 @@ class Treatment(SQLModel, table=True):
     info: Optional[str] = Field(default=None, repr=False, description="Extra information about the treatment")
 
     # timeseries. This is currently grouped by interventions and observations, however
-    interventions: List["Timeseries"] = Relationship(back_populates="treatment", cascade_delete=True, sa_relationship_kwargs=dict())
-    observations: List["Timeseries"] = Relationship(back_populates="treatment", cascade_delete=True, sa_relationship_kwargs=dict(overlaps="interventions"))
+    timeseries: List["Timeseries"] = Relationship(back_populates="treatment", cascade_delete=True, sa_relationship_kwargs=dict())
+    
+    @computed_field(repr=False)
+    def observations(self) -> List["Timeseries"]:
+        return [ts for ts in self.timeseries if ts.type == "observation"]
+
+    @computed_field(repr=False)
+    def interventions(self) -> List["Timeseries"]:
+        return [ts for ts in self.timeseries if ts.type == "intervention"]
+    # observations: List["Timeseries"] = Relationship(back_populates="treatment", cascade_delete=True, sa_relationship_kwargs=dict(overlaps="interventions"))
     
     # relationships to parent tables
-    experiment_id: Optional[int] = Field(default=None, foreign_key="experiment.id", sa_column_kwargs=dict())
+    experiment_id: Optional[int] = Field(default=None, foreign_key="experiment.id", exclude=True, sa_column_kwargs=dict())
     experiment: Optional["Experiment"] = Relationship(back_populates="treatments", sa_relationship_kwargs=dict())
 
     @field_validator("subject_age_from", "subject_age_to", mode="before")
@@ -66,14 +183,15 @@ class Treatment(SQLModel, table=True):
             return pd.Timedelta(value)
 
 class Timeseries(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True, sa_column_kwargs=dict())
+    id: Optional[int] = Field(default=None, primary_key=True, exclude=True, sa_column_kwargs=dict())
     type: str = Field(description="Can be 'intervention' or 'observation'.")
     variable: str
-    name: Optional[str] = Field(default=None, description="e.g. replicate ID")
+    name: Optional[str] = Field(index=True, default=None, description="e.g. replicate ID")
 
     # this column is very important, because it requires some thought.
     unit: str
-    method: Optional[str] = Field(default=None, description="If type: 'observation': the measurement method. If type: 'intervention': the application method")
+    time_unit: str
+    method: Optional[str] = Field(index=True, default=None, description="If type: 'observation': the measurement method. If type: 'intervention': the application method")
     sample: Optional[str] = Field(default=None, description="If type: 'observation', the sample which has been measured. If type: 'intervention', the medium of applying the intervention")
     interpolation: Optional[str] = Field(default="constant", description="How the data are interpolated between timepoints.")
     info: Optional[str] = Field(default=None)
@@ -81,9 +199,20 @@ class Timeseries(SQLModel, table=True):
     tsdata: List["TsData"] = Relationship(back_populates="timeseries", sa_relationship_kwargs=dict())
 
     # relationships to parent tables
-    treatment_id: Optional[int] = Field(default=None, foreign_key="treatment.id")
-    treatment: Optional["Treatment"] = Relationship(sa_relationship_kwargs=dict())
+    treatment_id: Optional[int] = Field(default=None, foreign_key="treatment.id", exclude=True)
+    treatment: Optional["Treatment"] = Relationship(back_populates="timeseries", sa_relationship_kwargs=dict())
 
+    # @computed_field(repr=False)
+    # def tsdata(self) -> List["TsData"]:
+    #     return [ts for ts in self._tsdata]
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, value):
+        if value not in ["intervention", "observation"]:
+            raise ValueError("'Treatment.type' must be 'observation' or 'intervention'")
+        else:
+            return value
 
     @field_validator("method", "sample", "unit", "interpolation", mode="before")
     @classmethod
@@ -124,12 +253,12 @@ class TsData(SQLModel, table=True):
     are assumed constant for any timeseries and stored in the Parent timeseries
     entry.
     """
-    id: Optional[int] = Field(primary_key=True, default=None)
+    id: Optional[int] = Field(primary_key=True, default=None, exclude=True)
     time: timedelta
     value: float
 
     # relationships to parent tables
-    timeseries_id: Optional[int] = Field(default=None, foreign_key="timeseries.id", sa_column_kwargs=dict())
+    timeseries_id: Optional[int] = Field(default=None, foreign_key="timeseries.id", exclude=True, sa_column_kwargs=dict())
     timeseries: Optional["Timeseries"] = Relationship(back_populates="tsdata", sa_relationship_kwargs=dict())
 
     @field_validator("time", mode="before")
@@ -137,17 +266,20 @@ class TsData(SQLModel, table=True):
     def to_timedelta(cls, value, info):
         if isinstance(value, float|int):
             return timedelta(seconds=float(value))
-        elif isinstance(value, timedelta):
-            return value
-        elif isinstance(value, np.timedelta64):
-            return value.item()
         elif isinstance(value, pd.Timedelta):
             return value.to_pytimedelta()
+        elif isinstance(value, np.timedelta64):
+            return value.item()
+        elif isinstance(value, timedelta):
+            return value
         else:
             raise TypeError(
                 "TsData expects 'time' Field to be of types: "
                 "'float', 'datetime.timedelta', 'pd.Timedelta' or 'np.timedelta64'"
             )
+    
+
+
 def split_join(df, statement):
     """Corrects column names from informations contained in the statement"""
     from_clause = statement.froms[0]
@@ -219,7 +351,7 @@ def from_expydb(database, statement=None):
     if statement is None:
         statement = (
             select(Timeseries, Treatment)
-            .join(Timeseries.treatment,)
+            .join(Timeseries)
         )
 
     # get the joint table and split it according to the database model
@@ -251,7 +383,7 @@ def from_expydb(database, statement=None):
         # occurr
         statement = (
             select(Treatment, Timeseries)
-            .join(Timeseries.treatment)
+            .join(Timeseries)
             .where(Treatment.id == treatment_row.treatment_id)
         )
 
@@ -268,7 +400,7 @@ def from_expydb(database, statement=None):
             # query all TsDatasets in the obtained timeseries
             statement = (
                 select(TsData, Timeseries)
-                .join(Timeseries.tsdata)
+                .join(Timeseries)
                 .where(Timeseries.id == timeseries_row.timeseries_id)
             )
             joint_table = pd.read_sql(statement, con=database)
