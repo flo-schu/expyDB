@@ -1,5 +1,6 @@
 from typing import List, Optional, Annotated, Union, Any, Dict, Tuple, Literal
 from datetime import datetime, timedelta
+import os
 
 import pandas as pd
 import arviz as az
@@ -19,51 +20,170 @@ from pydantic import (
 )
 
 
-class Converter:
+class PandasConverter:
     def __init__(self, experiment: "Experiment"):
         self._experiment = experiment
         self._model_dict = experiment.model_dump(mode="python")
 
         experiment_meta = self.parse_experiment()
 
-        treatment_meta, observations, intterventions = self.parse_treatments()
+        self.meta = {"experiment": experiment_meta}
 
+        [t.model_dump(mode="python") for t in self._experiment.treatments]
+
+
+        data_frames, treatment_meta = self.parse_treatments()
+        self.data = data_frames
+        # treatment_meta, treatment_meta_description = self.get_metadata(
+        #     self._experiment.treatments, 
+        #     exclude_keys=["name", "info", "observations", "interventions"]
+        # )
+        # timeseries_meta, timeseries_meta_description = self.get_metadata(
+        #     self._experiment.treatments[0].timeseries,
+        #     exclude_keys=["name", "info","type", "variable"]
+        # )
+        self.meta.update({"treatment": treatment_meta})
+
+
+    # def get_metadata(self, items: Union[List["Treatment"],List["Timeseries"]], exclude_keys=[]):
+    #     meta_value = {}
+    #     meta_description = {}
+    #     for i, t in enumerate(items):
+    #         name = getattr(t, "name")
+    #         name = str(i).zfill(2) if name is None else name
+
+    #         for k, f in type(t).__fields__.items():
+    #             if f.exclude or k in exclude_keys: # type: ignore
+    #                 continue
+    #             if i == 0:
+    #                 val_comp = getattr(t, k) # type: ignore
+    #                 meta_value.update({k: {name: val_comp}})
+    #                 meta_default = f.default # type: ignore
+    #                 meta_description.update({k: f.description}) # type: ignore
+
+    #             val = getattr(t, k)
+    #             if val == val_comp:
+    #                 pass
+    #             else: 
+    #                 meta_value[k].update({name: val})
+                
+    #     meta = {
+    #         k: list(meta_value[k].values())[0] if len(v) == 1 else v 
+    #         for k, v in meta_value.items()
+    #     }
+
+    #     return meta, meta_description
 
     def parse_experiment(self):
         experiment_meta = self._experiment.model_dump(mode="python", exclude="treatments") # type:ignore
         return experiment_meta
 
     def parse_treatments(self):
-        keys = [k for k, f in Treatment.__fields__.items() if not f.exclude] # type: ignore
-        treatments_meta = {k: None for k in keys}
+        # TODO: Retrieve metadata and find a good way to represent data that 
+        # deviate from the norm. E.g. Get the unique values and identify the mode 
+        # of these values as the default. Then convert it to a dictionary that
+        # is represented in excel as a comma (?? or semicolon or any other separator) seperated string
+        frames = {}
 
-        observations = treatments_to_pandas(
-            treatment_list=self._experiment.treatments,
-            timeseries_type="observation"
+        for ov in self._experiment.observations:
+
+            observations, ov_meta = treatments_to_pandas(
+                treatment_list=self._experiment.treatments,
+                timeseries_type="observation",
+                variable=ov,
+            )
+            frames.update({ov: observations})
+
+        for iv in self._experiment.interventions:
+            interventions, iv_meta = treatments_to_pandas(
+                treatment_list=self._experiment.treatments,
+                timeseries_type="intervention",
+                variable=iv
+            )
+            frames.update({iv: interventions})
+
+        assert iv_meta == ov_meta # type: ignore
+
+        return frames, iv_meta
+
+    def to_excel(self, path, variables: Optional[List] = None):
+        if variables is None:
+            sheets = self.data
+        else:
+            sheets = {k: v for k, v in self.data.items() if k in variables}
+
+        treatment_meta = pd.DataFrame.from_dict(self.meta["treatment"])
+
+        # this obtains the most frequent value and uses it as a default
+        treatment_meta_mode = treatment_meta.T.mode().T.replace(np.nan, None)
+        treatment_meta_mode.columns = ["value"]
+
+        experiment_meta = pd.DataFrame.from_dict(
+            {f"experiment_{k}": v for k, v in self.meta["experiment"].items()}, 
+            orient="index", 
+            columns=["value"]
         )
 
-        interventions = treatments_to_pandas(
-            treatment_list=self._experiment.treatments,
-            timeseries_type="intervention"
-        )
-        return treatments_meta, observations, interventions
+        is_mode = treatment_meta.values == treatment_meta_mode.values
+        treatment_meta_deviation = treatment_meta.copy()
+        treatment_meta_deviation[is_mode] = None
 
+        meta = pd.concat([experiment_meta, treatment_meta_mode])
+
+        self.excel_writer(path=path, df=meta, sheet="meta")
+        self.excel_writer(path=path, df=treatment_meta_deviation, sheet="meta_timeseries")
+
+        for sheet_name, df in sheets.items():
+            self.excel_writer(
+                path=path,
+                df=self.to_spreadsheet(df),
+                sheet=sheet_name, 
+            )
+
+    @staticmethod
+    def excel_writer(path, df: pd.DataFrame, sheet):
+        if not os.path.exists(path):
+            with pd.ExcelWriter(path, mode="w") as writer:
+                df.to_excel(writer, sheet_name=sheet)
+
+        else:
+            with pd.ExcelWriter(path, if_sheet_exists="replace", mode="a") as writer:
+                df.to_excel(writer, sheet_name=sheet)
+
+
+    def to_spreadsheet(self, df):
+        _df = df.copy()
+        _df.columns = _df.columns.map(lambda x: f"{x[0]}_{x[1]}")
+        return _df
+
+    def to_xarray(self, timeseries_df: pd.DataFrame):
+        assert isinstance(timeseries_df.columns, pd.MultiIndex)
+        assert timeseries_df.columns.names == ["treatment_id", "timeseries_id"]
+        assert timeseries_df.index.name == "time"
+        arr = xr.DataArray(timeseries_df).rename({"dim_1": "id"})
 
 def treatments_to_pandas(
     treatment_list: List["Treatment"], 
-    timeseries_type: Literal["observation", "intervention"]
-):
+    timeseries_type: Literal["observation", "intervention"],
+    variable: str,
+) -> Tuple[pd.DataFrame, Dict]:
     timeseries = {}
+    timeseries_meta = {}
+    index_tuples = []
     for ti, treatment in enumerate(treatment_list):
         _treatment_meta = treatment.model_dump(mode="python", exclude=["observations", "interventions"]) # type:ignore
         timeseries_list = getattr(treatment, f"{timeseries_type}s")
-        tid = _treatment_meta["name"]
+        tid = _treatment_meta.pop("name")
         tid = str(ti).zfill(2) if tid is None else tid
 
-        for oi, timeseries_obs in enumerate(timeseries_list): # type: ignore
-            _timeseries_meta = timeseries_obs.model_dump(mode="python") 
-            tsdata = [tsd.model_dump() for tsd in timeseries_obs.tsdata]
-            rid = _timeseries_meta["name"]
+        for oi, _timeseries in enumerate(timeseries_list): # type: ignore
+            # TODO: Refactor into smaller pieces, so that a timeseries only can be exported
+            if _timeseries.variable != variable:
+                continue
+
+            _timeseries_meta = _timeseries.model_dump(mode="python", exclude=["variable", "type"]) 
+            tsdata = [tsd.model_dump() for tsd in _timeseries.tsdata]
+            rid = _timeseries_meta.pop("name")
             rid = str(oi).zfill(2) if rid is None else rid
 
             df = pd.DataFrame.from_records(tsdata)
@@ -72,16 +192,26 @@ def treatments_to_pandas(
                 timeseries.update({"time": time})
 
             values = df["value"].values
+            index_tuples.append((tid, rid))
             timeseries.update({f"{tid}_{rid}": values})
 
-        return pd.DataFrame.from_dict(timeseries)
+            ts_meta = {f"treatment_{k}":v for k, v in _treatment_meta.items()}
+            ts_meta.update({f"timeseries_{k}": v for k, v in _timeseries_meta.items()})
+
+            timeseries_meta.update({f"{tid}_{rid}": ts_meta})
+
+    timeseries_df = pd.DataFrame.from_dict(timeseries)
+    multi_index = pd.MultiIndex.from_tuples(
+        index_tuples, names=["treatment_id", "timeseries_id"]
+    )
+
+    timeseries_df = timeseries_df.set_index("time")
+    timeseries_df.columns=multi_index
+
+    return timeseries_df, timeseries_meta
 
 
-
-class PandasConverter(Converter):
-    pass
-
-def model_to_pandas(data: Dict) -> Dict[str, pd.DataFrame]:
+def model_to_pandas(data: Dict):
     return
 
 def tsdata_to_pandas(tsdata: List["TsData"]) -> pd.DataFrame:
@@ -112,9 +242,9 @@ def pandas_to_timeseries(meta: pd.Series, data: pd.DataFrame) -> Dict:
 DATETIME_DEFAULT = datetime.now()
 
 class Experiment(SQLModel, table=True):
-    id_laboratory: Optional[int] = Field(default=None)
-    name: Optional[str] = Field(default=None)
-    date: Optional[datetime] = Field(default=datetime(1900,1,1,0,0))
+    laboratory: Optional[int] = Field(default=None, description="Optional[str], Laboratory where the experiment was conducted")
+    name: Optional[str] = Field(default=None, description="Optional[str], Internal name of the experiment")
+    date: Optional[datetime] = Field(default=datetime(1900,1,1,0,0), description="Optional[str]")
     experimentator: Optional[str] = Field(default=None)
     public: Optional[bool] = Field(default=False)
     info: Optional[str] = Field(default=None, repr=False, description="Extra information about the Experiment")
@@ -126,6 +256,31 @@ class Experiment(SQLModel, table=True):
     # relationships
     treatments: List["Treatment"] = Relationship(back_populates="experiment", cascade_delete=True)
     
+    def _get_unique_timeseries(self, ts_field, type: Literal["interventions", "observations"]) -> List:
+        return list(np.unique(np.concatenate([
+            [getattr(ts, ts_field) for ts in getattr(tr, type)] for tr in self.treatments]
+        )))
+
+    def _get_unique_treatment(self, tr_field) -> List:
+        return list(np.unique(
+            [getattr(tr, tr_field) for tr in self.treatments]
+        ))
+
+    @computed_field
+    @property
+    def observations(self) -> List[str]:
+        return list(np.unique(np.concatenate([
+            [ts.variable for ts in tr.observations] for tr in self.treatments]
+        )))
+
+    @computed_field
+    @property
+    def interventions(self) -> List[str]:
+        return list(np.unique(np.concatenate([
+            [tr.variable for tr in tr.interventions] for tr in self.treatments]
+        )))
+
+
     # @computed_field(repr=False)
     # def treatments(self) -> List["Treatment"]:
     #     return [t for t in self._treatments]
@@ -143,6 +298,8 @@ class Treatment(SQLModel, table=True):
 
     Any time-variable information that is relevant to the treatment can and should
     be included via the exposures map.
+
+    Treatments are the sites were interventions and observations are matched.
     """
     id: Optional[int] = Field(default=None, primary_key=True, exclude=True, sa_column_kwargs=dict())
     name: Optional[str] = Field(default=None, description="Name of the treatment")
@@ -162,10 +319,12 @@ class Treatment(SQLModel, table=True):
     timeseries: List["Timeseries"] = Relationship(back_populates="treatment", cascade_delete=True, sa_relationship_kwargs=dict())
     
     @computed_field(repr=False)
+    @property
     def observations(self) -> List["Timeseries"]:
         return [ts for ts in self.timeseries if ts.type == "observation"]
 
     @computed_field(repr=False)
+    @property
     def interventions(self) -> List["Timeseries"]:
         return [ts for ts in self.timeseries if ts.type == "intervention"]
     # observations: List["Timeseries"] = Relationship(back_populates="treatment", cascade_delete=True, sa_relationship_kwargs=dict(overlaps="interventions"))

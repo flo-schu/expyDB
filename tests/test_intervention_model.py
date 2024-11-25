@@ -28,7 +28,7 @@ def test_model_to_database(tmp_path):
     create_database(database=database, force=True)
 
     ts_meta_int = dict(type="intervention", variable="oxygen", unit="mg/L", time_unit="hour")
-    ts_meta_obs = dict(type="observation", variable="respiration", unit="mg/L", time_unit="hours")
+    ts_meta_obs = dict(type="observation", variable="respiration", unit="mg/L", time_unit="hour")
 
     experiment = Experiment.model_validate({})
     treatment = Treatment.model_validate({})
@@ -75,6 +75,7 @@ def test_model_to_database(tmp_path):
 
     # test init form excel file
     pandas_converter = PandasConverter(experiment)
+    pandas_converter.to_excel(tmp_path / "test.xlsx")
 
     experiment_to_db(database=database, experiment=experiment)
 
