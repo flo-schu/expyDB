@@ -21,105 +21,34 @@ from pydantic import (
 
 
 class PandasConverter:
+    meta_sep = "__"
+    experiment_exclude_meta = ["treatments", "created_at"]
+    treatment_exclude_meta = ["name", "info", "interventions", "observations"]
+    timeseries_exclude_meta = ["name", "info", "unit", "variable", "type"]
     def __init__(self, experiment: "Experiment"):
         self._experiment = experiment
         self._model_dict = experiment.model_dump(mode="python")
 
         experiment_meta = self.parse_experiment()
-
-        self.meta = {"experiment": experiment_meta}
-
-        [t.model_dump(mode="python") for t in self._experiment.treatments]
-
-
         data_frames, treatment_meta = self.parse_treatments()
+
         self.data = data_frames
-        # treatment_meta, treatment_meta_description = self.get_metadata(
-        #     self._experiment.treatments, 
-        #     exclude_keys=["name", "info", "observations", "interventions"]
-        # )
-        # timeseries_meta, timeseries_meta_description = self.get_metadata(
-        #     self._experiment.treatments[0].timeseries,
-        #     exclude_keys=["name", "info","type", "variable"]
-        # )
-        self.meta.update({"treatment": treatment_meta})
+        
+        self.meta_dict = {"experiment": experiment_meta}
+        self.meta_dict.update({"treatment": treatment_meta})
+        meta, treatment_meta_deviation = self.parse_metadata()
+        self.meta = meta
+        self.treatment_meta = treatment_meta_deviation
 
-
-    # def get_metadata(self, items: Union[List["Treatment"],List["Timeseries"]], exclude_keys=[]):
-    #     meta_value = {}
-    #     meta_description = {}
-    #     for i, t in enumerate(items):
-    #         name = getattr(t, "name")
-    #         name = str(i).zfill(2) if name is None else name
-
-    #         for k, f in type(t).__fields__.items():
-    #             if f.exclude or k in exclude_keys: # type: ignore
-    #                 continue
-    #             if i == 0:
-    #                 val_comp = getattr(t, k) # type: ignore
-    #                 meta_value.update({k: {name: val_comp}})
-    #                 meta_default = f.default # type: ignore
-    #                 meta_description.update({k: f.description}) # type: ignore
-
-    #             val = getattr(t, k)
-    #             if val == val_comp:
-    #                 pass
-    #             else: 
-    #                 meta_value[k].update({name: val})
-                
-    #     meta = {
-    #         k: list(meta_value[k].values())[0] if len(v) == 1 else v 
-    #         for k, v in meta_value.items()
-    #     }
-
-    #     return meta, meta_description
-
-    def parse_experiment(self):
-        experiment_meta = self._experiment.model_dump(mode="python", exclude="treatments") # type:ignore
-        return experiment_meta
-
-    def parse_treatments(self):
-        # TODO: Retrieve metadata and find a good way to represent data that 
-        # deviate from the norm. E.g. Get the unique values and identify the mode 
-        # of these values as the default. Then convert it to a dictionary that
-        # is represented in excel as a comma (?? or semicolon or any other separator) seperated string
-        frames = {}
-
-        for ov in self._experiment.observations:
-
-            observations, ov_meta = treatments_to_pandas(
-                treatment_list=self._experiment.treatments,
-                timeseries_type="observation",
-                variable=ov,
-            )
-            frames.update({ov: observations})
-
-        for iv in self._experiment.interventions:
-            interventions, iv_meta = treatments_to_pandas(
-                treatment_list=self._experiment.treatments,
-                timeseries_type="intervention",
-                variable=iv
-            )
-            frames.update({iv: interventions})
-
-        assert iv_meta == ov_meta # type: ignore
-
-        return frames, iv_meta
-
-    def to_excel(self, path, variables: Optional[List] = None):
-        if variables is None:
-            sheets = self.data
-        else:
-            sheets = {k: v for k, v in self.data.items() if k in variables}
-
-        treatment_meta = pd.DataFrame.from_dict(self.meta["treatment"])
+    def parse_metadata(self):
+        treatment_meta = pd.DataFrame.from_dict(self.meta_dict["treatment"], orient="index")
 
         # this obtains the most frequent value and uses it as a default
         treatment_meta_mode = treatment_meta.T.mode().T.replace(np.nan, None)
         treatment_meta_mode.columns = ["value"]
 
         experiment_meta = pd.DataFrame.from_dict(
-            {f"experiment_{k}": v for k, v in self.meta["experiment"].items()}, 
+            {f"experiment{self.meta_sep}{k}": v for k, v in self.meta_dict["experiment"].items()}, 
             orient="index", 
             columns=["value"]
         )
@@ -129,9 +58,68 @@ class PandasConverter:
         treatment_meta_deviation[is_mode] = None
 
         meta = pd.concat([experiment_meta, treatment_meta_mode])
+        meta.index.name = "Metadata"
 
-        self.excel_writer(path=path, df=meta, sheet="meta")
-        self.excel_writer(path=path, df=treatment_meta_deviation, sheet="meta_timeseries")
+        return meta, treatment_meta_deviation
+
+    @property
+    def meta_multiindex(self):
+        return pd.MultiIndex.from_tuples([(k, v) for k, v in self.meta.index.str.split(self.meta_sep)])
+
+    def parse_experiment(self):
+        experiment_meta = self._experiment.model_dump(mode="python", exclude="treatments") # type:ignore
+        return experiment_meta
+
+    def parse_treatments(self) -> Tuple[Dict[str,pd.DataFrame],Dict[str,Dict]]:
+        # TODO: Retrieve metadata and find a good way to represent data that 
+        # deviate from the norm. E.g. Get the unique values and identify the mode 
+        # of these values as the default. Then convert it to a dictionary that
+        # is represented in excel as a comma (?? or semicolon or any other separator) seperated string
+        frames = {}
+        meta = {}
+
+
+        for ov in self._experiment.observations:
+            observations, ov_meta = self.treatments_to_pandas(
+                treatment_list=self._experiment.treatments,
+                timeseries_type="observation",
+                variable=ov,
+            )
+            frames.update({ov: observations})
+            meta.update({ov: ov_meta})
+
+        for iv in self._experiment.interventions:
+            interventions, iv_meta = self.treatments_to_pandas(
+                treatment_list=self._experiment.treatments,
+                timeseries_type="intervention",
+                variable=iv
+            )
+            frames.update({iv: interventions})
+            meta.update({iv: iv_meta})
+
+        if len(meta) > 0:
+            first_value = list(meta.values())[0]
+            all_equal = all(value == first_value for value in meta.values())
+            assert all_equal
+            meta: Dict = list(meta.values())[0]
+        else:
+            meta = {
+                "treatment": Treatment().model_dump(exclude=self.treatment_exclude_meta), # type: ignore
+                "timeseries": Timeseries().model_dump(exclude=self.timeseries_exclude_meta) # type: ignore
+            }
+            meta = pd.json_normalize(meta, sep=self.meta_sep).loc[0].to_dict()
+            meta = {k: {None: v} for k, v in meta.items()}
+
+        return frames, meta
+
+    def to_excel(self, path, variables: Optional[List] = None):
+        if variables is None:
+            sheets = self.data
+        else:
+            sheets = {k: v for k, v in self.data.items() if k in variables}
+
+        self.excel_writer(path=path, df=self.meta, sheet="meta")
+        self.excel_writer(path=path, df=self.treatment_meta, sheet="meta_timeseries")
 
         for sheet_name, df in sheets.items():
             self.excel_writer(
@@ -162,53 +150,54 @@ class PandasConverter:
         assert timeseries_df.index.name == "time"
         arr = xr.DataArray(timeseries_df).rename({"dim_1": "id"})
 
-def treatments_to_pandas(
-    treatment_list: List["Treatment"], 
-    timeseries_type: Literal["observation", "intervention"],
-    variable: str,
-) -> Tuple[pd.DataFrame, Dict]:
-    timeseries = {}
-    timeseries_meta = {}
-    index_tuples = []
-    for ti, treatment in enumerate(treatment_list):
-        _treatment_meta = treatment.model_dump(mode="python", exclude=["observations", "interventions"]) # type:ignore
-        timeseries_list = getattr(treatment, f"{timeseries_type}s")
-        tid = _treatment_meta.pop("name")
-        tid = str(ti).zfill(2) if tid is None else tid
+    def treatments_to_pandas(
+        self,
+        treatment_list: List["Treatment"], 
+        timeseries_type: Literal["observation", "intervention"],
+        variable: str,
+    ) -> Tuple[pd.DataFrame, Dict]:
+        timeseries = {}
+        timeseries_meta = {}
+        index_tuples = []
+        for ti, treatment in enumerate(treatment_list):
+            _treatment_meta = treatment.model_dump(mode="python", exclude=self.treatment_exclude_meta) # type:ignore
+            timeseries_list = getattr(treatment, f"{timeseries_type}s")
+            tid = treatment.name
+            tid = str(ti).zfill(2) if tid is None else tid
 
-        for oi, _timeseries in enumerate(timeseries_list): # type: ignore
-            # TODO: Refactor into smaller pieces, so that a timeseries only can be exported
-            if _timeseries.variable != variable:
-                continue
+            for oi, _timeseries in enumerate(timeseries_list): # type: ignore
+                # TODO: Refactor into smaller pieces, so that a timeseries only can be exported
+                if _timeseries.variable != variable:
+                    continue
 
-            _timeseries_meta = _timeseries.model_dump(mode="python", exclude=["variable", "type"]) 
-            tsdata = [tsd.model_dump() for tsd in _timeseries.tsdata]
-            rid = _timeseries_meta.pop("name")
-            rid = str(oi).zfill(2) if rid is None else rid
+                _timeseries_meta = _timeseries.model_dump(mode="python", exclude=self.timeseries_exclude_meta) 
+                tsdata = [tsd.model_dump() for tsd in _timeseries.tsdata]
+                rid = _timeseries.name
+                rid = str(oi).zfill(2) if rid is None else rid
 
-            df = pd.DataFrame.from_records(tsdata)
-            if oi == 0:
-                time = df["time"].values
-                timeseries.update({"time": time})
+                df = pd.DataFrame.from_records(tsdata)
+                if oi == 0:
+                    time = df["time"].values
+                    timeseries.update({"time": time})
 
-            values = df["value"].values
-            index_tuples.append((tid, rid))
-            timeseries.update({f"{tid}_{rid}": values})
+                values = df["value"].values
+                index_tuples.append((tid, rid))
+                timeseries.update({f"{tid}_{rid}": values})
 
-            ts_meta = {f"treatment_{k}":v for k, v in _treatment_meta.items()}
-            ts_meta.update({f"timeseries_{k}": v for k, v in _timeseries_meta.items()})
+                ts_meta = {f"treatment{self.meta_sep}{k}":v for k, v in _treatment_meta.items()}
+                ts_meta.update({f"timeseries{self.meta_sep}{k}": v for k, v in _timeseries_meta.items()})
 
-            timeseries_meta.update({f"{tid}_{rid}": ts_meta})
+                timeseries_meta.update({f"{tid}_{rid}": ts_meta})
 
-    timeseries_df = pd.DataFrame.from_dict(timeseries)
-    multi_index = pd.MultiIndex.from_tuples(
-        index_tuples, names=["treatment_id", "timeseries_id"]
-    )
+        timeseries_df = pd.DataFrame.from_dict(timeseries)
+        multi_index = pd.MultiIndex.from_tuples(
+            index_tuples, names=["treatment_id", "timeseries_id"]
+        )
 
-    timeseries_df = timeseries_df.set_index("time")
-    timeseries_df.columns=multi_index
+        timeseries_df = timeseries_df.set_index("time")
+        timeseries_df.columns=multi_index
 
-    return timeseries_df, timeseries_meta
+        return timeseries_df, timeseries_meta
 
 
 def model_to_pandas(data: Dict):
@@ -257,6 +246,9 @@ class Experiment(SQLModel, table=True):
     treatments: List["Treatment"] = Relationship(back_populates="experiment", cascade_delete=True)
     
     def _get_unique_timeseries(self, ts_field, type: Literal["interventions", "observations"]) -> List:
+        if len(self.treatments) == 0:
+            return []
+
         return list(np.unique(np.concatenate([
             [getattr(ts, ts_field) for ts in getattr(tr, type)] for tr in self.treatments]
         )))
@@ -269,17 +261,32 @@ class Experiment(SQLModel, table=True):
     @computed_field
     @property
     def observations(self) -> List[str]:
-        return list(np.unique(np.concatenate([
-            [ts.variable for ts in tr.observations] for tr in self.treatments]
-        )))
+        return self._get_unique_timeseries("variable", type="observations")
 
     @computed_field
     @property
     def interventions(self) -> List[str]:
-        return list(np.unique(np.concatenate([
-            [tr.variable for tr in tr.interventions] for tr in self.treatments]
-        )))
+        return self._get_unique_timeseries("variable", type="interventions")
 
+    @computed_field
+    @property
+    def interventions_unit(self) -> List[str]:
+        return self._get_unique_timeseries("unit", type="interventions")
+
+    @computed_field
+    @property
+    def observations_unit(self) -> List[str]:
+        return self._get_unique_timeseries("unit", type="observations")
+
+    @computed_field
+    @property
+    def interventions_time_unit(self) -> List[str]:
+        return self._get_unique_timeseries("time_unit", type="interventions")
+
+    @computed_field
+    @property
+    def observations_time_unit(self) -> List[str]:
+        return self._get_unique_timeseries("time_unit", type="observations")
 
     # @computed_field(repr=False)
     # def treatments(self) -> List["Treatment"]:
@@ -308,7 +315,6 @@ class Treatment(SQLModel, table=True):
     subject: Optional[str] = Field(default=None, description="Identification of the subject of the treatment (Species, Family, Name, ...)")
     subject_age_from: Optional[timedelta] = Field(default=None, description="Age of the test subject, at the start of the treatment")
     subject_age_to: Optional[timedelta] = Field(default=None, description="Age of the test subject, at the start of the treatment")
-    subject_count: Optional[float] = Field(default=1, description="Count of the test subjects, if they cannot be discriminated in the experiment")
 
     # information about the test environment
     medium: Optional[str] = Field(default=None, description="The medium inside the subject lived throughout the treatment")
@@ -350,6 +356,7 @@ class Timeseries(SQLModel, table=True):
     # this column is very important, because it requires some thought.
     unit: str
     time_unit: str
+    subject_count: Optional[int] = Field(default=None, description="Count of the test subjects, if they cannot be discriminated in the experiment")
     method: Optional[str] = Field(index=True, default=None, description="If type: 'observation': the measurement method. If type: 'intervention': the application method")
     sample: Optional[str] = Field(default=None, description="If type: 'observation', the sample which has been measured. If type: 'intervention', the medium of applying the intervention")
     interpolation: Optional[str] = Field(default="constant", description="How the data are interpolated between timepoints.")
