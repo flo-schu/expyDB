@@ -1,4 +1,4 @@
-from typing import List, Optional, Annotated, Union, Any, Dict, Tuple, Literal, Callable
+from typing import List, Optional, Annotated, Union, Any, Dict, Tuple, Literal, Callable, Hashable
 from datetime import datetime, timedelta
 import os
 
@@ -36,13 +36,13 @@ class PandasConverter:
         self.data = data_frames
         
         self.meta_dict = {"experiment": experiment_meta}
-        self.meta_dict.update({"treatment": treatment_meta})
+        self.meta_dict.update({"treatment": treatment_meta}) # type: ignore
         meta, treatment_meta_deviation = self.parse_metadata()
         self.meta = meta
         self.treatment_meta = treatment_meta_deviation
 
     def parse_metadata(self):
-        treatment_meta = pd.DataFrame.from_dict(self.meta_dict["treatment"], orient="index")
+        treatment_meta = pd.DataFrame.from_dict(self.meta_dict["treatment"], orient="columns")
 
         # this obtains the most frequent value and uses it as a default
         treatment_meta_mode = treatment_meta.T.mode().T.replace(np.nan, None)
@@ -71,13 +71,13 @@ class PandasConverter:
         experiment_meta = self._experiment.model_dump(mode="python", exclude="treatments") # type:ignore
         return experiment_meta
 
-    def parse_treatments(self) -> Tuple[Dict[str,pd.DataFrame],Dict[str,Dict]]:
+    def parse_treatments(self) -> Tuple[Dict[str,pd.DataFrame],Dict[Hashable,Dict[Hashable,Any]]]:
         # TODO: Retrieve metadata and find a good way to represent data that 
         # deviate from the norm. E.g. Get the unique values and identify the mode 
         # of these values as the default. Then convert it to a dictionary that
         # is represented in excel as a comma (?? or semicolon or any other separator) seperated string
         frames = {}
-        meta = {}
+        meta: Dict[Hashable,Dict[Hashable,Any]] = {}
 
 
         for ov in self._experiment.observations:
@@ -98,19 +98,26 @@ class PandasConverter:
             frames.update({iv: interventions})
             meta.update({iv: iv_meta})
 
-        if len(meta) > 0:
-            first_value = list(meta.values())[0]
-            all_equal = all(value == first_value for value in meta.values())
-            assert all_equal
-            meta: Dict = list(meta.values())[0]
-        else:
-            meta = {
+        if len(meta) == 0:
+            _meta = {
                 "treatment": Treatment().model_dump(exclude=self.treatment_exclude_meta), # type: ignore
                 "intervention": Timeseries().model_dump(exclude=self.timeseries_exclude_meta), # type: ignore
                 "observation": Timeseries().model_dump(exclude=self.timeseries_exclude_meta), # type: ignore
             }
-            meta = pd.json_normalize(meta, sep=self.meta_sep).loc[0].to_dict()
-            meta = {k: {None: v} for k, v in meta.items()}
+            _meta = pd.json_normalize(_meta, sep=self.meta_sep).loc[0].to_dict()
+            meta = {None: _meta}
+        else:
+            # FIXME: THIS IS NOT YET CORRECT!!! If more than one observation or timeseries 
+            # are available for this, we will overwrite the metadata
+            _meta = {}
+            for i, (ts, tsdict) in enumerate(meta.items()):
+                if i == 0:
+                    _meta.update(tsdict)
+                else:
+                    for tsid, tsmeta in tsdict.items():
+                        _meta[tsid].update(tsmeta)
+            meta = _meta
+
 
         return frames, meta
 
@@ -157,7 +164,7 @@ class PandasConverter:
         treatment_list: List["Treatment"], 
         timeseries_type: Literal["observation", "intervention"],
         variable: str,
-    ) -> Tuple[pd.DataFrame, Dict]:
+    ) -> Tuple[pd.DataFrame, Dict[Hashable,Any]]:
         timeseries = {}
         timeseries_meta = {}
         index_tuples = []
@@ -257,9 +264,9 @@ def pandas_to_timeseries(meta: pd.Series, data: pd.DataFrame) -> Dict:
 DATETIME_DEFAULT = datetime.now()
 
 class Experiment(SQLModel, table=True):
-    laboratory: Optional[int] = Field(default=None, description="Optional[str], Laboratory where the experiment was conducted")
+    laboratory: Optional[str] = Field(default=None, description="Optional[str], Laboratory where the experiment was conducted")
     name: Optional[str] = Field(default=None, description="Optional[str], Internal name of the experiment")
-    date: Optional[datetime] = Field(default=None, description="Optional[datetime]")
+    date: Optional[datetime] = Field(default=datetime(year=1,month=1,day=1), description="Optional[datetime]")
     experimentator: Optional[str] = Field(default=None)
     public: Optional[bool] = Field(default=False)
     info: Optional[str] = Field(default=None, repr=False, description="Extra information about the Experiment")
@@ -325,14 +332,54 @@ class Experiment(SQLModel, table=True):
     #     return 
 
 class Treatment(SQLModel, table=True):
-    """The treatment table contains the main pieces of information. In principle,
-    all relevant information for repitition of an experiment should be included
-    here.
+    """The treatment must contain all information necessary for the repetition
+    of an experiment or for the execution of a simulation. Information in the
+    treatment can be thought of as the experimental conditions necessary to
+    reproduce control conditions.
+    
+    Ideally these information are the same for one experiment, however, due to
+    experimental constraints the control conditions may not be exactly the same
+    from treatment to treatment (e.g. number of replicates)
 
-    Any time-variable information that is relevant to the treatment can and should
-    be included via the exposures map.
+    Any time-variable information that is relevant to the treatment can and
+    should be included via the intervention Field.
 
     Treatments are the sites were interventions and observations are matched.
+    
+    TODO: Refactor (or rather don't refactor) the organization of Timeseries 
+    ------------------------------------------------------------------------
+    Currently Treatments contain multiple timeseries. This allows
+    the grouping of multiple replicates for treatment. However, if expyDB should
+    match what is going on the real world, this is not what is happening. In
+    reality even "replicates" vary due to e.g. reduced number of available organisms
+    or accidents while conducting the experiment. Therefore each treatment has 
+    in fact N replicates and each replicate has K interventions and M observations
+    Under the current system it is not possible to exactly link sets of observations
+    and interventions for a given replicate. This could be achieved with the id
+    or by adding relationships between timeseries
+    - simplest way: Unique names for each set of variables in Timeseries of 
+      observations and treatments. E.g.:
+       id  name  Variable  Type
+       1   1     survival  observation
+       2   1     censoring observation
+       3   1     arsenic   intervention
+       4   2     survival  observation
+       5   2     censoring observation
+       6   2     arsenic   intervention
+       ..  ..   ...       ...
+    - Include Relationships between IDs
+       id  name  Variable  Type         related
+       1   1     survival  observation  2,3
+       2   1     censoring observation  1,3
+       3   1     arsenic   intervention 1,2
+       4   2     survival  observation  5,6
+       5   2     censoring observation  4,6
+       6   2     arsenic   intervention 4,5
+       ..  ..   ...       ...
+    - Create a Replicate Model where an arbitrary number of timeseries can go into.
+      These timeseries will be automatically associated with each replicate.
+      While I like the logic of the approach, it becomes an increasingly nested
+      Database which might be difficult to deal with for a user.
     """
     id: Optional[int] = Field(default=None, primary_key=True, exclude=True, sa_column_kwargs=dict())
     name: Optional[str] = Field(default=None, description="Name of the treatment")
@@ -664,10 +711,10 @@ def add_tsdata(df: pd.DataFrame, time_unit: str, timeseries: Timeseries):
         else:
             time = row.time
 
-        ts_data = TsData(
+        ts_data = TsData.model_validate(TsData(
             time=time,
             value=row.value,
-        )
+        ))
 
         timeseries.tsdata.append(ts_data)
 
@@ -714,7 +761,7 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
     # TODO: Enable when notes columns is integrated
     # info = meta_full.to_json()#.replace("\n", "---")
     # experiment = Experiment(**experiment_fields, info=info)
-    experiment = Experiment(**experiment_fields)
+    experiment = Experiment.model_validate(Experiment(**experiment_fields))
     experiment.created_at=CREATED_AT
     
     for (tid, observation_group), (tid, intervention_group) in zip(
@@ -722,10 +769,10 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
         interventions.groupby("treatment_id")
     ):
         # add treatment
-        treatment = Treatment(
+        treatment = Treatment.model_validate(Treatment(
             name=str(tid),
             **treatment_fields,
-        )
+        ))
 
         experiment.treatments.append(treatment)
 
@@ -734,47 +781,54 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
         # intervention_pattern = list(intervention_group.groupby("replicate_id"))[0][1]
 
         # add exposure interventions
-        interventions = [s.strip("[]' ") for s in meta_["experiment__interventions"].split(",")]
-        for iv in interventions:
+        _interventions = [s.strip("[]' ") for s in meta_["experiment__interventions"].split(",")]
+        
+        for rep_id, intervention_rep in intervention_group.groupby("replicate_id"):
+            for iv in _interventions:
+                
+                # Asserting that each intervention has the same name
+                ts_exposure = Timeseries.model_validate(Timeseries(
+                    name=str(rep_id),
+                    type="intervention",
+                    variable=iv,
+                    **intervention_timeseries_fields
+                ))
 
-            ts_exposure = Timeseries(
-                type="intervention",
-                variable=iv,
-                **intervention_timeseries_fields
-            )
+                treatment.timeseries.append(ts_exposure)
 
-            treatment.interventions.append(ts_exposure)
-            time_unit = time_units["interventions"][iv]
-            tsdata_iv = intervention_group[["time", "treatment_id", "replicate_id", iv]]
-            tsdata_iv = tsdata_iv.rename(columns={iv: "value"})
-            add_tsdata(
-                df=tsdata_iv, 
-                time_unit=time_unit if bool(time_unit) else default_time_unit, 
-                timeseries=ts_exposure
-            )
+                time_unit = time_units["interventions"][iv]
+                tsdata_iv = intervention_rep[["time", "treatment_id", "replicate_id", iv]]
+                tsdata_iv = tsdata_iv.rename(columns={iv: "value"})
+                add_tsdata(
+                    df=tsdata_iv, 
+                    time_unit=time_unit if bool(time_unit) else default_time_unit, 
+                    timeseries=ts_exposure
+                )
 
         obsevations_pattern = list(observation_group.groupby("replicate_id"))[0][1]
 
         # add observations
-        observations = [s.strip("[]' ") for s in meta_["experiment__observations"].split(",")]
+        _observations = [s.strip("[]' ") for s in meta_["experiment__observations"].split(",")]
 
         for rep_id, observation_rep in observation_group.groupby("replicate_id"):
-            for obs in observations:
-                ts_survival_rep = Timeseries(
+            for obs in _observations:
+
+                # Asserting that each observation has the same name
+                ts_survival_rep = Timeseries.model_validate(Timeseries(
                     name=str(rep_id),
                     type="observation",
                     variable=obs,
                     **observation_timeseries_fields
-                )
+                ))
 
-                treatment.observations.append(ts_survival_rep)
+                treatment.timeseries.append(ts_survival_rep)
 
                 time_unit = time_units["observations"][obs]
                 tsdata_obs = observation_rep[["time", "treatment_id", "replicate_id", obs]]
                 tsdata_obs = tsdata_obs.rename(columns={obs: "value"})
                 add_tsdata(
                     df=tsdata_obs, 
-                    time_unit=time_unit, 
+                    time_unit=time_unit if bool(time_unit) else default_time_unit, 
                     timeseries=ts_survival_rep
                 )
 
