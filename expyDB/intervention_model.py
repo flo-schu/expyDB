@@ -1,4 +1,4 @@
-from typing import List, Optional, Annotated, Union, Any, Dict, Tuple, Literal
+from typing import List, Optional, Annotated, Union, Any, Dict, Tuple, Literal, Callable
 from datetime import datetime, timedelta
 import os
 
@@ -22,9 +22,10 @@ from pydantic import (
 
 class PandasConverter:
     meta_sep = "__"
+    meta_value_column_name = "Value"
     experiment_exclude_meta = ["treatments", "created_at"]
     treatment_exclude_meta = ["name", "info", "interventions", "observations"]
-    timeseries_exclude_meta = ["name", "info", "unit", "variable", "type"]
+    timeseries_exclude_meta = ["name", "info", "variable", "type"]
     def __init__(self, experiment: "Experiment"):
         self._experiment = experiment
         self._model_dict = experiment.model_dump(mode="python")
@@ -45,12 +46,12 @@ class PandasConverter:
 
         # this obtains the most frequent value and uses it as a default
         treatment_meta_mode = treatment_meta.T.mode().T.replace(np.nan, None)
-        treatment_meta_mode.columns = ["value"]
+        treatment_meta_mode.columns = [self.meta_value_column_name]
 
         experiment_meta = pd.DataFrame.from_dict(
             {f"experiment{self.meta_sep}{k}": v for k, v in self.meta_dict["experiment"].items()}, 
             orient="index", 
-            columns=["value"]
+            columns=[self.meta_value_column_name]
         )
 
         is_mode = treatment_meta.values == treatment_meta_mode.values
@@ -105,7 +106,8 @@ class PandasConverter:
         else:
             meta = {
                 "treatment": Treatment().model_dump(exclude=self.treatment_exclude_meta), # type: ignore
-                "timeseries": Timeseries().model_dump(exclude=self.timeseries_exclude_meta) # type: ignore
+                "intervention": Timeseries().model_dump(exclude=self.timeseries_exclude_meta), # type: ignore
+                "observation": Timeseries().model_dump(exclude=self.timeseries_exclude_meta), # type: ignore
             }
             meta = pd.json_normalize(meta, sep=self.meta_sep).loc[0].to_dict()
             meta = {k: {None: v} for k, v in meta.items()}
@@ -141,7 +143,7 @@ class PandasConverter:
 
     def to_spreadsheet(self, df):
         _df = df.copy()
-        _df.columns = _df.columns.map(lambda x: f"{x[0]}_{x[1]}")
+        _df.columns = _df.columns.map(lambda x: f"{x[0]}__{x[1]}")
         return _df
 
     def to_xarray(self, timeseries_df: pd.DataFrame):
@@ -185,7 +187,7 @@ class PandasConverter:
                 timeseries.update({f"{tid}_{rid}": values})
 
                 ts_meta = {f"treatment{self.meta_sep}{k}":v for k, v in _treatment_meta.items()}
-                ts_meta.update({f"timeseries{self.meta_sep}{k}": v for k, v in _timeseries_meta.items()})
+                ts_meta.update({f"{timeseries_type}{self.meta_sep}{k}": v for k, v in _timeseries_meta.items()})
 
                 timeseries_meta.update({f"{tid}_{rid}": ts_meta})
 
@@ -198,6 +200,30 @@ class PandasConverter:
         timeseries_df.columns=multi_index
 
         return timeseries_df, timeseries_meta
+
+
+    def map_to_meta(self, data: pd.Series, map: List[Tuple[Union[str,List[str],None],Tuple[str,str],Union[Callable,None]]]):
+        meta = {}
+        for orig_key, (section, key), func in map:
+            if func is None:
+                func = lambda x: x
+
+            if isinstance(orig_key, list):
+                value = func(data[orig_key])
+            
+            else:
+                value = func(data.get(orig_key))
+            
+            if value is None:
+                print(f"{orig_key} not found.")
+                continue
+            meta[section + self.meta_sep + key] = value
+
+        self.meta.update(pd.Series(meta).to_frame(name=self.meta_value_column_name))
+
+        for key, value in meta.items():
+            if key not in self.meta.index:
+                self.meta.loc[key.strip("__"),self.meta_value_column_name] = value
 
 
 def model_to_pandas(data: Dict):
@@ -233,7 +259,7 @@ DATETIME_DEFAULT = datetime.now()
 class Experiment(SQLModel, table=True):
     laboratory: Optional[int] = Field(default=None, description="Optional[str], Laboratory where the experiment was conducted")
     name: Optional[str] = Field(default=None, description="Optional[str], Internal name of the experiment")
-    date: Optional[datetime] = Field(default=datetime(1900,1,1,0,0), description="Optional[str]")
+    date: Optional[datetime] = Field(default=None, description="Optional[datetime]")
     experimentator: Optional[str] = Field(default=None)
     public: Optional[bool] = Field(default=False)
     info: Optional[str] = Field(default=None, repr=False, description="Extra information about the Experiment")
@@ -268,25 +294,25 @@ class Experiment(SQLModel, table=True):
     def interventions(self) -> List[str]:
         return self._get_unique_timeseries("variable", type="interventions")
 
-    @computed_field
-    @property
-    def interventions_unit(self) -> List[str]:
-        return self._get_unique_timeseries("unit", type="interventions")
+    # @computed_field
+    # @property
+    # def interventions_unit(self) -> List[str]:
+    #     return self._get_unique_timeseries("unit", type="interventions")
 
-    @computed_field
-    @property
-    def observations_unit(self) -> List[str]:
-        return self._get_unique_timeseries("unit", type="observations")
+    # @computed_field
+    # @property
+    # def observations_unit(self) -> List[str]:
+    #     return self._get_unique_timeseries("unit", type="observations")
 
-    @computed_field
-    @property
-    def interventions_time_unit(self) -> List[str]:
-        return self._get_unique_timeseries("time_unit", type="interventions")
+    # @computed_field
+    # @property
+    # def interventions_time_unit(self) -> List[str]:
+    #     return self._get_unique_timeseries("time_unit", type="interventions")
 
-    @computed_field
-    @property
-    def observations_time_unit(self) -> List[str]:
-        return self._get_unique_timeseries("time_unit", type="observations")
+    # @computed_field
+    # @property
+    # def observations_time_unit(self) -> List[str]:
+    #     return self._get_unique_timeseries("time_unit", type="observations")
 
     # @computed_field(repr=False)
     # def treatments(self) -> List["Treatment"]:
@@ -315,6 +341,7 @@ class Treatment(SQLModel, table=True):
     subject: Optional[str] = Field(default=None, description="Identification of the subject of the treatment (Species, Family, Name, ...)")
     subject_age_from: Optional[timedelta] = Field(default=None, description="Age of the test subject, at the start of the treatment")
     subject_age_to: Optional[timedelta] = Field(default=None, description="Age of the test subject, at the start of the treatment")
+    subject_count: Optional[int] = Field(default=None, description="Count of the test subjects, if they cannot be discriminated in the experiment")
 
     # information about the test environment
     medium: Optional[str] = Field(default=None, description="The medium inside the subject lived throughout the treatment")
@@ -350,14 +377,14 @@ class Treatment(SQLModel, table=True):
 class Timeseries(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True, exclude=True, sa_column_kwargs=dict())
     type: str = Field(description="Can be 'intervention' or 'observation'.")
-    variable: str
+    variable: str = Field(default=None)
     name: Optional[str] = Field(index=True, default=None, description="e.g. replicate ID")
 
     # this column is very important, because it requires some thought.
-    unit: str
-    time_unit: str
-    subject_count: Optional[int] = Field(default=None, description="Count of the test subjects, if they cannot be discriminated in the experiment")
+    unit: str = Field(default=None)
+    time_unit: str = Field(default=None)
     method: Optional[str] = Field(index=True, default=None, description="If type: 'observation': the measurement method. If type: 'intervention': the application method")
+    method_detail: Optional[str] = Field(index=True, default=None, description="Details on the method. Used to discriminate")
     sample: Optional[str] = Field(default=None, description="If type: 'observation', the sample which has been measured. If type: 'intervention', the medium of applying the intervention")
     interpolation: Optional[str] = Field(default="constant", description="How the data are interpolated between timepoints.")
     info: Optional[str] = Field(default=None)
@@ -665,58 +692,29 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
     CREATED_AT = datetime.now()
     meta.index = meta.index.str.lower().str.replace(" ","_")
     meta_ = meta.copy().loc[:,"Value"].T
-    meta_full = meta.copy().loc[:,"Notes"].T
+    meta_sep = "__"
+
+    # TODO: re-enable when a notes column is integrated
+    # meta_full = meta.copy().loc[:,"Notes"].T
 
     default_time_unit = meta_.get("time_unit", default="days")
 
-    # get experiment fields
-    experiment_columns = [
-        column for column in Experiment.__fields__
-        if not (
-            column.primary_key or 
-            column.key in ["created_at", "info"]
-        )
-    ]
+    experiment_columns = get_columns(Experiment, ["created_at", "info"])
+    experiment_fields = {k: meta_.get(f"experiment{meta_sep}{k}") for k in experiment_columns}
 
-    experiment_fields = {k: meta_.get(k) for k in experiment_columns}
-
-    # get treatment fields
-    treatment_columns = [
-        column.key for column in Treatment.__table__.columns
-        if not (
-            column.primary_key or 
-            column.key in ["name", "created_at", "experiment_id", "info"]
-        )
-    ]
-    treatment_fields = {k: meta_.get(k) for k in treatment_columns}
+    treatment_columns = get_columns(Treatment, ["name", "created_at", "experiment_id", "info"])
+    treatment_fields = {k: meta_.get(f"treatment{meta_sep}{k}") for k in treatment_columns}
 
     # get intervention timeseries fields
-    intervention_timeseries_columns = [
-        column.key for column in Timeseries.__table__.columns
-        if not (
-            column.primary_key or 
-            column.key in ["name", "type", "variable", "created_at", "treatment_id", "experiment_id", "info"]
-        )
-    ]
-    intervention_timeseries_fields = {k: meta_.get(f"intervention_{k}") for k in intervention_timeseries_columns}
-
-    # get observation timeseries fields
-    observation_timeseries_columns = [
-        column.key for column in Timeseries.__table__.columns
-        if not (
-            column.primary_key or 
-            column.key in ["name", "type", "variable", "created_at", "treatment_id", "experiment_id", "info"]
-        )
-    ]
-    observation_timeseries_fields = {k: meta_.get(f"observation_{k}") for k in observation_timeseries_columns}
-
+    timeseries_columns = get_columns(Timeseries, ["name", "type", "variable", "created_at", "treatment_id", "experiment_id", "info"])
+    intervention_timeseries_fields = {k: meta_.get(f"intervention__{k}") for k in timeseries_columns}
+    observation_timeseries_fields = {k: meta_.get(f"observation__{k}") for k in timeseries_columns}
 
     # remaining meta to a readable string
-    info = meta_full.to_json()#.replace("\n", "---")
-
-
-    experiment = Experiment(**experiment_fields, info=info)
-            
+    # TODO: Enable when notes columns is integrated
+    # info = meta_full.to_json()#.replace("\n", "---")
+    # experiment = Experiment(**experiment_fields, info=info)
+    experiment = Experiment(**experiment_fields)
     experiment.created_at=CREATED_AT
     
     for (tid, observation_group), (tid, intervention_group) in zip(
@@ -736,7 +734,7 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
         # intervention_pattern = list(intervention_group.groupby("replicate_id"))[0][1]
 
         # add exposure interventions
-        interventions = [s.strip(" ") for s in meta_["interventions"].split(",")]
+        interventions = [s.strip("[]' ") for s in meta_["experiment__interventions"].split(",")]
         for iv in interventions:
 
             ts_exposure = Timeseries(
@@ -758,7 +756,7 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
         obsevations_pattern = list(observation_group.groupby("replicate_id"))[0][1]
 
         # add observations
-        observations = [s.strip(" ") for s in meta_["observations"].split(",")]
+        observations = [s.strip("[]' ") for s in meta_["experiment__observations"].split(",")]
 
         for rep_id, observation_rep in observation_group.groupby("replicate_id"):
             for obs in observations:
@@ -781,3 +779,15 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
                 )
 
     return experiment
+
+
+
+def get_columns(model, exclude_extra: List[str]) -> List[str]:
+    # get experiment fields
+    return [
+        column for column, field in model.__fields__.items()
+        if not (
+            field.exclude or # type:ignore
+            column in exclude_extra
+        )
+    ]
