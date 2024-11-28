@@ -425,7 +425,7 @@ class Timeseries(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True, exclude=True, sa_column_kwargs=dict())
     type: str = Field(description="Can be 'intervention' or 'observation'.")
     variable: str = Field(default=None)
-    name: Optional[str] = Field(index=True, default=None, description="e.g. replicate ID")
+    name: str = Field(index=True, default=None, description="Required field. It is used to construct a unique index for treatment-timeseries combinations. E.g. replicate ID")
 
     # this column is very important, because it requires some thought.
     unit: str = Field(default=None)
@@ -630,6 +630,8 @@ def from_expydb(database, statement=None):
         joint_table = pd.read_sql(statement, con=database)
         (_, treatment_table_), (_, timeseries_table) = split_join(joint_table, statement)
 
+        # TODO: Prefix all columns with the respective model and two underscores.
+        # Here: "timeseries__"
         timeseries_table.columns = rename_duplicate_columns(
             columns=timeseries_table.columns,
             compare_table=treatment_table_,
