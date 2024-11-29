@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "expyDB"
-version = "0.5.3"
+version = "0.5.2"
 authors = [
   { name="Florian Schunck", email="fluncki@protonmail.com" },
 ]
@@ -12,8 +12,8 @@ description = "Set up and maintain databases for handling experimental data in P
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies=[
-  "sqlalchemy == 2.0",
-  "sqlmodel == 2.0.22",
+  "sqlalchemy ~= 2.0",
+  "sqlmodel == 0.0.22",
   "numpy ~= 1.24.0",
   "pandas ~= 2.0.2",
   "xarray",
@@ -43,7 +43,7 @@ namespaces = true  # true by default
 
 
 [tool.bumpver]
-current_version = "0.5.3"
+current_version = "0.5.2"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 tag_message = "{new_version}"
