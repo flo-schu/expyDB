@@ -128,7 +128,7 @@ class PandasConverter:
         else:
             sheets = {k: v for k, v in self.data.items() if k in variables}
 
-        if not os.access(path, os.W_OK):
+        if not os.access(path, os.W_OK) and os.access(path, os.F_OK):
             warnings.warn(
                 f"Aborted. The file '{path}' does not have write access. "
             )
@@ -220,7 +220,11 @@ class PandasConverter:
         return timeseries_df, timeseries_meta
 
 
-    def map_to_meta(self, data: pd.Series, map: List[Tuple[Union[str,List[str],None],Tuple[str,str],Union[Callable,None]]]):
+    def map_to_meta(
+            self, 
+            data: pd.Series = pd.Series(), 
+            map: List[Tuple[Union[str,List[str],None],Tuple[str,str],Union[Callable,None]]] = []
+        ):
         meta = {}
         for orig_key, (section, key), func in map:
             if func is None:
