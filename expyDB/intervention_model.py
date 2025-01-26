@@ -1,6 +1,7 @@
 from typing import List, Optional, Annotated, Union, Any, Dict, Tuple, Literal, Callable, Hashable
 from datetime import datetime, timedelta
 import os
+import warnings
 
 import pandas as pd
 import arviz as az
@@ -127,15 +128,25 @@ class PandasConverter:
         else:
             sheets = {k: v for k, v in self.data.items() if k in variables}
 
+        if not os.access(path, os.W_OK):
+            warnings.warn(
+                f"Aborted. The file '{path}' does not have write access. "
+            )
+            return
+
+
         self.excel_writer(path=path, df=self.meta, sheet="meta")
         self.excel_writer(path=path, df=self.treatment_meta, sheet="meta_timeseries")
 
-        for sheet_name, df in sheets.items():
-            self.excel_writer(
-                path=path,
-                df=self.to_spreadsheet(df),
-                sheet=sheet_name, 
-            )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter(action="ignore")
+            for sheet_name, df in sheets.items():
+                self.excel_writer(
+                    path=path,
+                    df=self.to_spreadsheet(df),
+                    sheet=sheet_name, 
+                )
 
     @staticmethod
     def excel_writer(path, df: pd.DataFrame, sheet):

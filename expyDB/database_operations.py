@@ -1,7 +1,7 @@
 import os
 import warnings
 import inspect
-from typing import List
+from typing import List, Callable
 import pandas as pd
 import numpy as np
 import datetime
@@ -25,9 +25,9 @@ def setter(variables, identifiers):
 def add_data(
     database: str,
     data: pd.DataFrame,
-    treatment: callable,
-    experiment: callable,
-    observation: callable,
+    treatment: Callable,
+    experiment: Callable,
+    observation: Callable,
 ):
     """Add data to a database.
     
@@ -140,6 +140,13 @@ def remove_latest(database):
 
 def create_database(database, force=False):
     if os.path.exists(database):
+        if not os.access(database, os.W_OK):
+            warnings.warn(
+                f"Did not create database. The file '{database}' does "
+                "not have write access. "
+            )
+            return
+  
         if force:
             os.remove(database)
         else:
