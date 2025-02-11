@@ -8,7 +8,11 @@ import arviz as az
 import xarray as xr
 import numpy as np
 
-from sqlmodel import ForeignKey, select, inspect, Field, SQLModel, Relationship
+from sqlmodel import (
+    ForeignKey, select, inspect, Field, SQLModel, 
+    Relationship, create_engine, Session
+)
+
 from pydantic import (
     field_validator, 
     model_validator,
@@ -19,6 +23,14 @@ from pydantic import (
     PlainSerializer,
     BeforeValidator
 )
+
+
+def experiment_to_db(database, experiment):
+    engine = create_engine(f"sqlite:///{database}", echo=False)
+    with Session(engine) as session:
+        session.add(experiment)
+        session.flush()
+        session.commit()
 
 
 class PandasConverter:
@@ -345,6 +357,39 @@ class Experiment(SQLModel, table=True):
     #     experiment_meta = self.__fields__.items()
     #     self._treatments[0].model_dump()
     #     return 
+
+    def to_database(self, database: str):
+        experiment_to_db(database=database, experiment=self)
+
+    @classmethod
+    def from_database(cls, database: str, query: int) -> "Experiment":
+        raise NotImplementedError(
+            "Define a method that queries Experiment from the database and "+
+            "returns it"
+        )
+        return cls(...)
+    
+    def to_xarray(self):
+        raise NotImplementedError
+    
+    def from_xarray(self):
+        raise NotImplementedError
+    
+    def from_dict(data: Dict) -> "Experiment":
+        # TODO: Change data typing to protocol
+        return to_expydb(
+            interventions=data["interventions"],
+            observations=data["observations"],
+            meta=data["meta"],
+            time_units=data["time_units"],
+        )
+
+    def to_dict(self) -> Dict:
+        raise NotImplementedError(
+            "This method should turn an Experiment to the attributes of OpenGutsIO"
+            "(interventions_long, observations_long, time_untis, meta)"
+            "A starting point could be the PandasConverter and then convert to long"
+        )
 
 class Treatment(SQLModel, table=True):
     """The treatment must contain all information necessary for the repetition
@@ -862,3 +907,4 @@ def get_columns(model, exclude_extra: List[str]) -> List[str]:
             column in exclude_extra
         )
     ]
+
