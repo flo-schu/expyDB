@@ -532,6 +532,9 @@ class Timeseries(SQLModel, table=True):
                 key, val = pair.split(':', 1)  # Split by the first colon
                 key = key.strip()
                 val = val.strip()
+                # return the value if the key is 'observation' or 'intervention'
+                if key == info.data["variable"]:
+                    return val
                 result_dict[key] = val
             else:
                 # If it's just "topical", treat it as a default entry
