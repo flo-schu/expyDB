@@ -770,9 +770,12 @@ def add_tsdata(df: pd.DataFrame, time_unit: str, timeseries: Timeseries):
     if np.issubdtype(df["time"].dtype, np.datetime64): # type: ignore
         df.loc[:,"time"] = df.time - df.time.iloc[0]
 
+
     for _, row in df.iterrows():
-        if isinstance(row.time, float|int):
+        if isinstance(row.time, (float, int)):
             time = timedelta(**{time_unit: row.time})
+        elif np.issubdtype(row.time.dtype, (np.int64, np.float64)): 
+            time = timedelta(**{time_unit: float(row.time)})
         else:
             time = row.time
 
@@ -821,6 +824,9 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
     timeseries_columns = get_columns(Timeseries, ["name", "type", "variable", "created_at", "treatment_id", "experiment_id", "info"])
     intervention_timeseries_fields = {k: meta_.get(f"intervention__{k}") for k in timeseries_columns}
     observation_timeseries_fields = {k: meta_.get(f"observation__{k}") for k in timeseries_columns}
+    
+    default_intervention_time_unit = intervention_timeseries_fields.pop("time_unit")
+    default_observation_time_unit = observation_timeseries_fields.pop("time_unit")
 
     # remaining meta to a readable string
     # TODO: Enable when notes columns is integrated
@@ -851,17 +857,24 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
         for rep_id, intervention_rep in intervention_group.groupby("replicate_id"):
             for iv in _interventions:
                 
+                time_unit = time_units["interventions"][iv]
+                if time_unit is None:
+                    time_unit = default_intervention_time_unit
+                
+                if time_unit is None:
+                    time_unit = default_time_unit
+
                 # Asserting that each intervention has the same name
                 ts_exposure = Timeseries.model_validate(Timeseries(
                     name=str(rep_id),
                     type="intervention",
                     variable=iv,
+                    time_unit=time_unit,
                     **intervention_timeseries_fields
                 ))
 
                 treatment.timeseries.append(ts_exposure)
 
-                time_unit = time_units["interventions"][iv]
                 tsdata_iv = intervention_rep[["time", "treatment_id", "replicate_id", iv]]
                 tsdata_iv = tsdata_iv.rename(columns={iv: "value"})
                 add_tsdata(
@@ -878,17 +891,24 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
         for rep_id, observation_rep in observation_group.groupby("replicate_id"):
             for obs in _observations:
 
+                time_unit = time_units["observations"][obs]
+                if time_unit is None:
+                    time_unit = default_observation_time_unit
+                
+                if time_unit is None:
+                    time_unit = default_time_unit
+
                 # Asserting that each observation has the same name
                 ts_survival_rep = Timeseries.model_validate(Timeseries(
                     name=str(rep_id),
                     type="observation",
                     variable=obs,
+                    time_unit=time_unit,
                     **observation_timeseries_fields
                 ))
 
                 treatment.timeseries.append(ts_survival_rep)
 
-                time_unit = time_units["observations"][obs]
                 tsdata_obs = observation_rep[["time", "treatment_id", "replicate_id", obs]]
                 tsdata_obs = tsdata_obs.rename(columns={obs: "value"})
                 add_tsdata(
