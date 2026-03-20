@@ -375,15 +375,25 @@ class Experiment(SQLModel, table=True):
     def from_xarray(self):
         raise NotImplementedError
     
-    def from_dict(data: Dict) -> "Experiment":
+    @classmethod
+    def from_dict(cls, data: Dict, drop_nan_from_timeseries=False) -> "Experiment":
+        """        
+        drop_nan_from_timeseries : bool 
+            When adding TsData, nans raise an error. Sometimes it is good to have this fail
+            explicitly to warn the user that something is off but nans can also be removed
+            here, which can have unexpected consequences. Default: False
+
+        """
         # TODO: Change data typing to protocol
         return to_expydb(
             interventions=data["interventions"],
             observations=data["observations"],
             meta=data["meta"],
             time_units=data["time_units"],
+            drop_nan_from_timeseries=drop_nan_from_timeseries
         )
 
+    @staticmethod
     def to_dict(self) -> Dict:
         raise NotImplementedError(
             "This method should turn an Experiment to the attributes of OpenGutsIO"
@@ -787,11 +797,16 @@ def add_tsdata(df: pd.DataFrame, time_unit: str, timeseries: Timeseries):
         timeseries.tsdata.append(ts_data)
 
 
-def to_expydb(interventions, observations, meta, time_units) -> Experiment:
+def to_expydb(interventions, observations, meta, time_units, drop_nan_from_timeseries=False) -> Experiment:
     """This method takes the metadata and groups them in sections
     - Experiment
     - Treatment
     - Timeseries
+
+    drop_nan_from_timeseries : bool 
+        When adding TsData, nans raise an error. Sometimes it is good to have this fail
+        explicitly to warn the user that something is off but nans can also be removed
+        here, which can have unexpected consequences. Default: False
 
     The goal is to name the rows identical to the keys in the Models plus
     some syntactic sugar.
@@ -877,6 +892,10 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
 
                 tsdata_iv = intervention_rep[["time", "treatment_id", "replicate_id", iv]]
                 tsdata_iv = tsdata_iv.rename(columns={iv: "value"})
+
+                if drop_nan_from_timeseries:
+                    tsdata_iv = tsdata_iv.dropna()
+
                 add_tsdata(
                     df=tsdata_iv, 
                     time_unit=time_unit if bool(time_unit) else default_time_unit, 
@@ -911,6 +930,10 @@ def to_expydb(interventions, observations, meta, time_units) -> Experiment:
 
                 tsdata_obs = observation_rep[["time", "treatment_id", "replicate_id", obs]]
                 tsdata_obs = tsdata_obs.rename(columns={obs: "value"})
+                
+                if drop_nan_from_timeseries:
+                    tsdata_obs = tsdata_obs.dropna()
+
                 add_tsdata(
                     df=tsdata_obs, 
                     time_unit=time_unit if bool(time_unit) else default_time_unit, 
